@@ -1,6 +1,7 @@
 use clap::Parser;
 use colored::Colorize;
 use rustyline::completion::{Completer, Pair};
+use std::io::Read;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
@@ -15,6 +16,26 @@ mod formatter;
 use command_docs::CommandDocs;
 use completion::CommandCompleter;
 use connection::connect;
+
+// Print value in raw mode (no color, no formatting)
+fn print_raw_value(value: &redis::Value) {
+    match value {
+        redis::Value::Nil => println!("(nil)"),
+        redis::Value::Int(v) => println!("{}", v),
+        redis::Value::Data(v) => println!("{}", String::from_utf8_lossy(v)),
+        redis::Value::Bulk(values) => {
+            for (i, value) in values.iter().enumerate() {
+                print!("{}", i + 1);
+                match value {
+                    redis::Value::Data(v) => println!(" > {}", String::from_utf8_lossy(v)),
+                    _ => print_raw_value(value),
+                }
+            }
+        }
+        redis::Value::Status(v) => println!("{}", v),
+        redis::Value::Okay => println!("OK"),
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -45,6 +66,18 @@ struct Args {
 
     #[arg(short = 'n', long, default_value = "0")]
     db: i64, // Database number
+
+    #[arg(short = 'r', long)]
+    repeat: Option<u64>, // Repeat command N times
+
+    #[arg(short = 'i', long, default_value = "0")]
+    interval: f64, // Interval between repetitions (in seconds)
+
+    #[arg(long)]
+    raw: bool, // Raw output mode
+
+    #[arg(short = 'x')]
+    from_stdin: bool, // Read last argument from stdin
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -76,6 +109,83 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", format!("Warning: Failed to select database {}: {}", args.db, e).yellow());
             }
         }
+    }
+
+    // Check if there are command arguments
+    let cmd_args: Vec<String> = std::env::args().skip(1).collect();
+    let mut command_parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < cmd_args.len() {
+        let arg = &cmd_args[i];
+        if arg.starts_with('-') {
+            // This is an option
+            if arg == "-r" || arg == "--repeat" || arg == "-i" || arg == "--interval" {
+                // These options have values, skip the next argument
+                i += 2;
+            } else if arg == "-n" || arg == "--db" || arg == "-a" || arg == "--password" || 
+                      arg == "-H" || arg == "--host" || arg == "-P" || arg == "--port" ||
+                      arg == "--unix" || arg == "--tls" || arg == "--tls-ca-cert" ||
+                      arg == "--tls-client-cert" || arg == "--tls-client-key" {
+                // These options have values, skip the next argument
+                i += 2;
+            } else {
+                // These options don't have values
+                i += 1;
+            }
+        } else {
+            // This is a command or argument
+            command_parts.push(arg.clone());
+            i += 1;
+        }
+    }
+
+    // If there are command arguments, execute them
+    if !command_parts.is_empty() {
+        // Handle from stdin
+        let mut final_command_parts = command_parts;
+        if args.from_stdin {
+            // Read from stdin
+            let mut stdin = std::io::stdin();
+            let mut input = String::new();
+            stdin.read_to_string(&mut input)?;
+            let input = input.trim().to_string();
+            if !input.is_empty() {
+                // Replace the last argument with stdin input
+                if !final_command_parts.is_empty() {
+                    final_command_parts.pop();
+                }
+                final_command_parts.push(input);
+            }
+        }
+
+        // Execute the command
+        let repeat_count = args.repeat.unwrap_or(1);
+        for i in 0..repeat_count {
+            let result = redis::cmd(&final_command_parts[0])
+                .arg(&final_command_parts[1..])
+                .query(&mut conn);
+
+            match result {
+                Ok(value) => {
+                    if args.raw {
+                        // Raw output mode
+                        print_raw_value(&value);
+                    } else {
+                        // Normal output mode
+                        println!("{}", formatter::format_value(&value));
+                    }
+                }
+                Err(e) => {
+                    println!("{}", format!("Error: {}", e).red());
+                }
+            }
+
+            // Wait for interval if specified
+            if args.interval > 0.0 && i < repeat_count - 1 {
+                std::thread::sleep(std::time::Duration::from_secs_f64(args.interval));
+            }
+        }
+        return Ok(());
     }
 
     println!("{}", "Fetching command documentation...".blue());
