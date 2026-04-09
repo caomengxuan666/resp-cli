@@ -1,126 +1,146 @@
-# RESP-CLI
+# resp-cli
 
-A Redis-compatible command-line client with dynamic command completion and colorful output.
+A Redis-compatible command-line client written in Rust, supporting Redis, Dragonfly, and KeyDB.
 
 ## Features
 
-- **Dynamic Command Completion**: Auto-completion based on real-time server command documentation
-- **Cross-Server Compatibility**: Works with any RESP-compatible server (Redis, Dragonfly, KeyDB)
-- **Interactive REPL**: User-friendly command-line interface with history
-- **Colorful Output**: Syntax highlighting for better readability
-- **Secure Connection**: Supports password authentication and Unix sockets
-- **Persistent History**: History is saved across sessions
-- **Multi-line Input**: Support for multi-line commands
-- **Friendly Error Messages**: Detailed error messages with suggestions
+- **Real-time command documentation** fetching from the server
+- **Tab auto-completion** based on server-provided command documentation
+- **Manual completion triggering** support
+- **TCP and Unix socket** connection support
+- **Interactive REPL mode** with history
+- **Colorful output** and error handling
+- **Transaction support** (MULTI/EXEC/DISCARD)
+- **Pipeline execution** for improved performance
+- **Pub/Sub messaging** support
+- **MONITOR mode** for server monitoring
+- **Database selection** with SELECT command
+- **Configuration file** support (.respclirc)
+- **Client-side commands** like clear
+- **Command aliases** for custom shortcuts
+- **Scan mode** for key iteration
+- **Raw output mode** for machine-readable output
+- **Repeat command** functionality
+- **Read from stdin** support
+- **TLS encryption** support
 
 ## Installation
 
 ### From Source
 
-1. Clone the repository:
-
 ```bash
+# Clone the repository
 git clone https://github.com/yourusername/resp-cli.git
 cd resp-cli
-```
 
-2. Build the project:
-
-```bash
+# Build the project
 cargo build --release
-```
 
-3. Run the client:
-
-```bash
+# Run the client
 ./target/release/resp-cli
 ```
 
+### From Pre-built Binaries
+
+Pre-built binaries are available for Linux and Windows in the [releases](https://github.com/yourusername/resp-cli/releases) section.
+
 ## Usage
 
-### Basic Usage
+### Basic Connection
 
 ```bash
-# Connect to default Redis server (localhost:6379)
+# Connect to localhost:6379
 resp-cli
 
-# Connect to specific server
+# Connect to a specific host and port
 resp-cli -H 127.0.0.1 -P 6379
 
-# Connect with password
-resp-cli -H 127.0.0.1 -P 6379 -a mypassword
+# Connect using a Unix socket
+resp-cli --unix /tmp/redis.sock
 
-# Connect via Unix socket
-resp-cli --unix /path/to/redis.sock
+# Connect with password
+resp-cli -a yourpassword
+
+# Select database
+resp-cli -n 1
 ```
 
-### Command-Line Arguments
+### Command Line Options
 
-| Option | Short | Long | Description | Default |
-|--------|-------|------|-------------|---------|
-| Host | `-H` | `--host` | Redis server host | localhost |
-| Port | `-P` | `--port` | Redis server port | 6379 |
-| Password | `-a` | `--password` | Redis server password | None |
-| Unix Socket | | `--unix` | Unix socket path | None |
-| Help | `-h` | `--help` | Print help information | |
-| Version | `-V` | `--version` | Print version information | |
+- `-H, --host <HOST>`: Host to connect to (default: localhost)
+- `-P, --port <PORT>`: Port to connect to (default: 6379)
+- `-a, --password <PASSWORD>`: Password for authentication
+- `--unix <PATH>`: Unix socket path
+- `--tls`: Enable TLS encryption
+- `--tls-ca-cert <PATH>`: TLS CA certificate file
+- `--tls-client-cert <PATH>`: TLS client certificate file
+- `--tls-client-key <PATH>`: TLS client key file
+- `-n, --db <DB>`: Database number (default: 0)
+- `-r, --repeat <COUNT>`: Repeat command N times
+- `-i, --interval <SECONDS>`: Interval between repetitions (in seconds)
+- `--raw`: Raw output mode
+- `-x`: Read last argument from stdin
+- `--scan`: Scan mode
+- `--client-name <NAME>`: Client name
 
 ### Interactive Mode
 
-Once connected, you'll see the `resp> ` prompt. Here are some tips:
+When running resp-cli without command arguments, it enters interactive mode with a REPL (Read-Eval-Print Loop).
 
-- **Auto-completion**: Press Tab to auto-complete commands, subcommands, and arguments
-- **History**: Use up/down arrows to navigate command history
-- **Multi-line input**: End a line with `\` to continue input on the next line
-- **Exit**: Type `exit` or `quit`, or press Ctrl+D
+#### Key Features
 
-### Examples
+- **Tab completion**: Press Tab to auto-complete commands, subcommands, and arguments
+- **Command history**: Use up/down arrow keys to navigate through previous commands
+- **Multi-line input**: End a line with backslash (\) to continue input on the next line
+- **Client-side commands**: Use `clear` to clear the terminal screen
+- **Command aliases**: Define custom aliases with the `ALIAS` command
 
-```bash
-# Set a key
-resp> SET mykey "Hello, World!"
+#### Example Session
+
+```
+resp[localhost:6379]> set key value
 OK
-
-# Get a key
-resp> GET mykey
-"Hello, World!"
-
-# Multi-line command
-resp> SET mykey "This is a \
-...> multi-line \
-...> command"
-OK
-
-# List all keys
-resp> KEYS *
-[
-    "mykey",
-]
+resp[localhost:6379]> get key
+"value"
+resp[localhost:6379]> keys *
+1> "key"
+resp[localhost:6379]> clear
+# Screen cleared
+resp[localhost:6379]> exit
+Goodbye!
 ```
 
-## Technical Stack
+## Configuration
 
-- **Rust**: Core programming language
-- **rustyline**: Line editing and completion framework
-- **redis-rs**: Redis client library
-- **clap**: Command-line argument parsing
-- **serde + serde_json**: JSON parsing for command documentation
-- **colored**: Terminal color output
+resp-cli supports a configuration file `.respclirc` in the home directory. The file can contain the following settings:
+
+```
+host 127.0.0.1
+port 6379
+password yourpassword
+unix /tmp/redis.sock
+tls
+tls-ca-cert /path/to/ca.crt
+tls-client-cert /path/to/client.crt
+tls-client-key /path/to/client.key
+```
+
+## Commands
+
+### Supported Redis Commands
+
+resp-cli supports all Redis commands that the connected server provides. The client fetches command documentation from the server to provide auto-completion and better error messages.
+
+### Client-Side Commands
+
+- `clear`: Clear the terminal screen
+- `ALIAS`: Manage command aliases
+- `TIMEOUT`: Set command timeout
+- `SOURCE`: Execute commands from a file
 
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
-### Development Setup
-
-1. Clone the repository
-2. Run `cargo build` to build the project
-3. Run `cargo run` to run the client in development mode
-4. Run `cargo test` to run tests
-
-### Code Style
-
-This project follows the standard Rust code style. Please run `cargo fmt` before submitting a Pull Request.
 
 ## License
 

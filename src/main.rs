@@ -397,6 +397,8 @@ Welcome to resp-cli!"
             Ok(line) => {
                 let line_str = line.trim();
                 if line_str.is_empty() {
+                    // For empty lines, just show a new prompt
+                    println!();
                     continue;
                 }
 
@@ -563,6 +565,13 @@ fn process_command(
     timeout: &mut Option<u64>,
     current_db: &mut i64,
 ) {
+    // Check if it's a client-side command
+    if parts[0].eq_ignore_ascii_case("clear") {
+        // Clear the terminal screen
+        print!("\x1b[2J\x1b[1;1H");
+        return;
+    }
+
     // Check if it's an ALIAS command
     if parts[0].eq_ignore_ascii_case("ALIAS") {
         // Handle ALIAS command separately to avoid borrowing issues

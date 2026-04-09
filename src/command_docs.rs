@@ -33,22 +33,53 @@ pub struct CommandDocs {
 
 impl CommandDocs {
     pub fn fetch(conn: &mut redis::Connection) -> RedisResult<Self> {
-        let cmd_docs: redis::Value = redis::cmd("COMMAND").arg("DOCS").query(conn)?;
-
         let mut commands = HashMap::new();
 
-        if let redis::Value::Bulk(values) = &cmd_docs {
-            for value in values {
-                if let redis::Value::Data(data) = value {
-                    if let Ok(cmd_info) = serde_json::from_slice(data) {
-                        let cmd_info: CommandInfo = cmd_info;
-                        commands.insert(cmd_info.name.to_uppercase(), cmd_info);
+        // Try COMMAND DOCS first
+        match redis::cmd("COMMAND").arg("DOCS").query(conn) {
+            Ok(cmd_docs) => {
+                if let redis::Value::Bulk(values) = &cmd_docs {
+                    for value in values {
+                        if let redis::Value::Data(data) = value {
+                            if let Ok(cmd_info) = serde_json::from_slice(data) {
+                                let cmd_info: CommandInfo = cmd_info;
+                                commands.insert(cmd_info.name.to_uppercase(), cmd_info);
+                            }
+                        }
+                    }
+                }
+            },
+            Err(_) => {
+                // COMMAND DOCS failed, fall back to COMMAND
+                let cmd_list: redis::Value = redis::cmd("COMMAND").query(conn)?;
+
+                if let redis::Value::Bulk(values) = &cmd_list {
+                    for value in values {
+                        if let redis::Value::Bulk(cmd_parts) = value {
+                            if let Some(redis::Value::Data(cmd_name)) = cmd_parts.get(0) {
+                                if let Ok(cmd_name_str) = String::from_utf8(cmd_name.to_vec()) {
+                                    commands.insert(
+                                        cmd_name_str.to_uppercase(),
+                                        CommandInfo {
+                                            name: cmd_name_str,
+                                            arity: 0,
+                                            flags: vec![],
+                                            first_key: 0,
+                                            last_key: 0,
+                                            key_step: 0,
+                                            subcommands: None,
+                                            arguments: None,
+                                        },
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // If COMMAND DOCS fails, fall back to COMMAND
+        // If both commands failed or returned no data, try COMMAND as a last resort
         if commands.is_empty() {
             let cmd_list: redis::Value = redis::cmd("COMMAND").query(conn)?;
 

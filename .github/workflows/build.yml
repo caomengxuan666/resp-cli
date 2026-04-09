@@ -1,0 +1,82 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - v*.*.*
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+    
+    - name: Build
+      uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: --release
+    
+    - name: Rename binary (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      run: mv target/release/resp-cli target/release/resp-cli-linux
+    
+    - name: Rename binary (Windows)
+      if: matrix.os == 'windows-latest'
+      run: mv target/release/resp-cli.exe target/release/resp-cli-windows.exe
+    
+    - name: Upload artifact (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      uses: actions/upload-artifact@v3
+      with:
+        name: resp-cli-linux
+        path: target/release/resp-cli-linux
+    
+    - name: Upload artifact (Windows)
+      if: matrix.os == 'windows-latest'
+      uses: actions/upload-artifact@v3
+      with:
+        name: resp-cli-windows
+        path: target/release/resp-cli-windows.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Download Linux artifact
+      uses: actions/download-artifact@v3
+      with:
+        name: resp-cli-linux
+        path: ./artifacts
+    
+    - name: Download Windows artifact
+      uses: actions/download-artifact@v3
+      with:
+        name: resp-cli-windows
+        path: ./artifacts
+    
+    - name: Make binaries executable
+      run: chmod +x ./artifacts/resp-cli-linux
+    
+    - name: Create release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          ./artifacts/resp-cli-linux
+          ./artifacts/resp-cli-windows.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

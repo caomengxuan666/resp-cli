@@ -57,7 +57,8 @@ fn format_status(s: &str) -> String {
 
 fn format_string(s: &str) -> String {
     if s.contains('\n') {
-        format!("{:?}", s).blue().italic().to_string()
+        // For multi-line strings, show them as raw text without quotes
+        s.blue().italic().to_string()
     } else {
         format!("\"{}\"", s).blue().bold().to_string()
     }
