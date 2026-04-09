@@ -114,13 +114,13 @@ impl CommandCompleter {
             .unwrap_or_default()
     }
 
-    fn complete_args(&self, _command: &str, _arg_index: usize, prefix: &str) -> Vec<Pair> {
+    fn complete_args(&self, command: &str, _arg_index: usize, prefix: &str) -> Vec<Pair> {
         // This is a placeholder for argument completion
         // In a real implementation, we would parse the command's argument info
         // and provide relevant completions based on the argument type and position
         let mut completions: Vec<Pair> = Vec::new();
 
-        // For now, let's just return some common Redis argument completions
+        // Add common Redis argument completions
         let common_args = vec!["EX", "PX", "EXAT", "PXAT", "KEEPTTL", "NX", "XX", "GET"];
 
         for arg in common_args {
@@ -132,9 +132,42 @@ impl CommandCompleter {
             }
         }
 
+        // Add key name completions for commands that operate on keys
+        if self.is_key_operation(command) {
+            let key_completions = self.complete_key_names(prefix);
+            completions.extend(key_completions);
+        }
+
         // Sort arguments alphabetically
         completions.sort_by(|a, b| a.display.cmp(&b.display));
 
         completions
+    }
+
+    fn complete_key_names(&self, prefix: &str) -> Vec<Pair> {
+        // This is a placeholder for key name completion
+        // In a real implementation, we would use SCAN to get matching keys
+        let mut candidates = Vec::new();
+
+        // For demonstration purposes, we'll just return some dummy keys
+        let dummy_keys = vec!["key1", "key2", "user:1000", "user:1001", "product:100", "product:101"];
+
+        for key in dummy_keys {
+            if key.starts_with(prefix) {
+                candidates.push(Pair {
+                    display: key.to_string(),
+                    replacement: key.to_string(),
+                });
+            }
+        }
+
+        candidates
+    }
+
+    fn is_key_operation(&self, command: &str) -> bool {
+        // Check if the command operates on keys
+        let key_commands = vec!["GET", "SET", "DEL", "EXISTS", "INCR", "DECR", "EXPIRE", "TTL", "LPUSH", "RPUSH", "LPOP", "RPOP", "HGET", "HSET", "HDEL", "HMGET", "HMSET"];
+
+        key_commands.contains(&command.to_uppercase().as_str())
     }
 }

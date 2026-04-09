@@ -117,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse command line arguments
     let args = Args::parse();
 
-    println!("{}", "Connecting to Redis server...".blue());
+
 
     // Use config values as defaults if command line arguments are not specified
     let host = if !args.host.is_empty() && args.host != "localhost" {
@@ -189,31 +189,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tls_client_key,
     )?;
 
-    println!("{}", "Connected successfully!".green());
-
     // Select database if not default (0)
     if args.db != 0 {
         let result: redis::RedisResult<()> = redis::cmd("SELECT").arg(args.db).query(&mut conn);
-        match result {
-            Ok(_) => {
-                println!("{}", format!("Selected database {}", args.db).green());
-            }
-            Err(e) => {
-                println!("{}", format!("Warning: Failed to select database {}: {}", args.db, e).yellow());
-            }
+        if let Err(e) = result {
+            println!("{}", format!("Warning: Failed to select database {}: {}", args.db, e).yellow());
         }
     }
 
     // Set client name if specified
     if let Some(client_name) = &args.client_name {
         let result: redis::RedisResult<()> = redis::cmd("CLIENT").arg("SETNAME").arg(client_name).query(&mut conn);
-        match result {
-            Ok(_) => {
-                println!("{}", format!("Set client name to '{}'", client_name).green());
-            }
-            Err(e) => {
-                println!("{}", format!("Warning: Failed to set client name: {}", e).yellow());
-            }
+        if let Err(e) = result {
+            println!("{}", format!("Warning: Failed to set client name: {}", e).yellow());
         }
     }
 
@@ -331,13 +319,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    println!("{}", "Fetching command documentation...".blue());
-
+    // Fetch command documentation silently
     let command_docs = CommandDocs::fetch(&mut conn)?;
-    println!(
-        "{}",
-        format!("Fetched {} commands from server", command_docs.len()).green()
-    );
 
     let completer = CommandCompleter::new(command_docs);
     let config = Config::builder()
