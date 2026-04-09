@@ -78,22 +78,115 @@ struct Args {
 
     #[arg(short = 'x')]
     from_stdin: bool, // Read last argument from stdin
+
+    #[arg(long)]
+    scan: bool, // Scan mode
+
+    #[arg(long)]
+    client_name: Option<String>, // Client name
+}
+
+// Read .respclirc file from home directory
+fn read_respclirc() -> std::collections::HashMap<String, String> {
+    let mut config = std::collections::HashMap::new();
+    
+    // Get home directory
+    if let Some(home) = std::env::var_os("HOME") {
+        let config_path = std::path::Path::new(&home).join(".respclirc");
+        if config_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(config_path) {
+                for line in content.lines() {
+                    let line = line.trim();
+                    if !line.is_empty() && !line.starts_with('#') {
+                        if let Some((key, value)) = line.split_once(' ') {
+                            config.insert(key.to_string(), value.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    config
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Read config from .respclirc
+    let config = read_respclirc();
+    
+    // Parse command line arguments
     let args = Args::parse();
 
     println!("{}", "Connecting to Redis server...".blue());
 
+    // Use config values as defaults if command line arguments are not specified
+    let host = if !args.host.is_empty() && args.host != "localhost" {
+        &args.host
+    } else if let Some(h) = config.get("host") {
+        h
+    } else {
+        "localhost"
+    };
+
+    let port = if !args.port.is_empty() && args.port != "6379" {
+        &args.port
+    } else if let Some(p) = config.get("port") {
+        p
+    } else {
+        "6379"
+    };
+
+    let password = if args.password.is_some() {
+        args.password.as_deref()
+    } else if let Some(p) = config.get("password") {
+        Some(p.as_str())
+    } else {
+        None
+    };
+
+    let unix = if args.unix.is_some() {
+        args.unix.as_deref()
+    } else if let Some(u) = config.get("unix") {
+        Some(u.as_str())
+    } else {
+        None
+    };
+
+    let tls = args.tls || config.contains_key("tls");
+
+    let tls_ca_cert = if args.tls_ca_cert.is_some() {
+        args.tls_ca_cert.as_deref()
+    } else if let Some(c) = config.get("tls-ca-cert") {
+        Some(c.as_str())
+    } else {
+        None
+    };
+
+    let tls_client_cert = if args.tls_client_cert.is_some() {
+        args.tls_client_cert.as_deref()
+    } else if let Some(c) = config.get("tls-client-cert") {
+        Some(c.as_str())
+    } else {
+        None
+    };
+
+    let tls_client_key = if args.tls_client_key.is_some() {
+        args.tls_client_key.as_deref()
+    } else if let Some(k) = config.get("tls-client-key") {
+        Some(k.as_str())
+    } else {
+        None
+    };
+
     let mut conn = connect(
-        &args.host,
-        &args.port,
-        args.password.as_deref(),
-        args.unix.as_deref(),
-        args.tls,
-        args.tls_ca_cert.as_deref(),
-        args.tls_client_cert.as_deref(),
-        args.tls_client_key.as_deref(),
+        host,
+        port,
+        password,
+        unix,
+        tls,
+        tls_ca_cert,
+        tls_client_cert,
+        tls_client_key,
     )?;
 
     println!("{}", "Connected successfully!".green());
@@ -107,6 +200,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(e) => {
                 println!("{}", format!("Warning: Failed to select database {}: {}", args.db, e).yellow());
+            }
+        }
+    }
+
+    // Set client name if specified
+    if let Some(client_name) = &args.client_name {
+        let result: redis::RedisResult<()> = redis::cmd("CLIENT").arg("SETNAME").arg(client_name).query(&mut conn);
+        match result {
+            Ok(_) => {
+                println!("{}", format!("Set client name to '{}'", client_name).green());
+            }
+            Err(e) => {
+                println!("{}", format!("Warning: Failed to set client name: {}", e).yellow());
             }
         }
     }
@@ -137,6 +243,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             command_parts.push(arg.clone());
             i += 1;
         }
+    }
+
+    // Handle scan mode
+    if args.scan {
+        let mut cursor: u64 = 0;
+        let pattern = if !command_parts.is_empty() {
+            command_parts[0].clone()
+        } else {
+            "*".to_string()
+        };
+
+        loop {
+            let result: redis::RedisResult<(u64, Vec<String>)> = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(pattern.clone())
+                .arg("COUNT")
+                .arg(100)
+                .query(&mut conn);
+
+            match result {
+                Ok((new_cursor, keys)) => {
+                    for key in keys {
+                        println!("{}", key);
+                    }
+                    cursor = new_cursor;
+                    if cursor == 0 {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    println!("{}", format!("Error: {}", e).red());
+                    break;
+                }
+            }
+        }
+        return Ok(());
     }
 
     // If there are command arguments, execute them
