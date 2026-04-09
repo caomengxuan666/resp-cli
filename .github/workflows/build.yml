@@ -14,7 +14,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Set up Rust
       uses: actions-rs/toolchain@v1
@@ -38,14 +38,14 @@ jobs:
     
     - name: Upload artifact (Linux)
       if: matrix.os == 'ubuntu-latest'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: resp-cli-linux
         path: target/release/resp-cli-linux
     
     - name: Upload artifact (Windows)
       if: matrix.os == 'windows-latest'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: resp-cli-windows
         path: target/release/resp-cli-windows.exe
@@ -58,13 +58,13 @@ jobs:
     - uses: actions/checkout@v3
     
     - name: Download Linux artifact
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: resp-cli-linux
         path: ./artifacts
     
     - name: Download Windows artifact
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: resp-cli-windows
         path: ./artifacts
