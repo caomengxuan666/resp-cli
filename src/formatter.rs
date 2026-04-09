@@ -16,22 +16,23 @@ fn format_bulk(values: &[Value]) -> String {
     if values.is_empty() {
         return "(empty list or set)".dimmed().to_string();
     }
-    
+
+    // For bulks, use redis-cli style numbered format
     let mut result = String::new();
-    result.push_str(&format!("{}
-", "[".cyan()));
-    
     for (i, value) in values.iter().enumerate() {
+        let item_num = i + 1;
         let formatted = format_value(value);
-        let line = if i == values.len() - 1 {
-            format!("    {}", formatted)
-        } else {
-            format!("    {},", formatted)
-        };
-        result.push_str(&format!("{}\n", line));
+
+        // For nested bulks, add proper indentation
+        let lines: Vec<&str> = formatted.lines().collect();
+        for (j, line) in lines.iter().enumerate() {
+            if j == 0 {
+                result.push_str(&format!("{}> {}\n", item_num, line));
+            } else {
+                result.push_str(&format!("   {}\n", line));
+            }
+        }
     }
-    
-    result.push_str(&"]".cyan());
     result
 }
 

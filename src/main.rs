@@ -1,112 +1,254 @@
 use clap::Parser;
 use colored::Colorize;
-use rustyline::error::ReadlineError;
-use rustyline::{Config, Context, Editor, Helper};
 use rustyline::completion::{Completer, Pair};
+use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
+use rustyline::{Config, Context, Editor, Helper};
 
-mod connection;
 mod command_docs;
 mod completion;
+mod connection;
 mod formatter;
 
-use connection::connect;
 use command_docs::CommandDocs;
 use completion::CommandCompleter;
+use connection::connect;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     #[arg(short = 'H', long, default_value = "localhost")]
     host: String,
-    
+
     #[arg(short = 'P', long, default_value = "6379")]
     port: String,
-    
+
     #[arg(short = 'a', long)]
     password: Option<String>,
-    
+
     #[arg(long)]
     unix: Option<String>,
+
+    #[arg(long)]
+    tls: bool, // Enable TLS
+
+    #[arg(long)]
+    tls_ca_cert: Option<String>, // TLS CA certificate file
+
+    #[arg(long)]
+    tls_client_cert: Option<String>, // TLS client certificate file
+
+    #[arg(long)]
+    tls_client_key: Option<String>, // TLS client key file
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    
+
     println!("{}", "Connecting to Redis server...".blue());
-    
+
     let mut conn = connect(
         &args.host,
         &args.port,
         args.password.as_deref(),
-        args.unix.as_deref()
+        args.unix.as_deref(),
+        args.tls,
+        args.tls_ca_cert.as_deref(),
+        args.tls_client_cert.as_deref(),
+        args.tls_client_key.as_deref(),
     )?;
-    
+
     println!("{}", "Connected successfully!".green());
     println!("{}", "Fetching command documentation...".blue());
-    
+
     let command_docs = CommandDocs::fetch(&mut conn)?;
-    println!("{}", format!("Fetched {} commands from server", command_docs.len()).green());
-    
+    println!(
+        "{}",
+        format!("Fetched {} commands from server", command_docs.len()).green()
+    );
+
     let completer = CommandCompleter::new(command_docs);
     let config = Config::builder()
         .history_ignore_space(true)
         .auto_add_history(true)
         .build();
-    
-    let h = MyHelper {
-        completer,
-    };
-    
+
+    let h = MyHelper { completer };
+
     let mut rl = Editor::with_config(config)?;
     rl.set_helper(Some(h));
-    
+
     // Load history if it exists
     let _ = rl.load_history("resp-cli-history.txt");
-    
-    println!("{}", "
-Welcome to resp-cli!".cyan());
+
+    // Transaction state
+    let mut in_transaction = false;
+    let mut transaction_commands: Vec<(String, Vec<String>)> = Vec::new();
+
+    // Pipeline state
+    let mut in_pipeline = false;
+    let mut pipeline_commands: Vec<(String, Vec<String>)> = Vec::new();
+
+    // Pub/Sub state
+    let mut in_subscription = false;
+
+    // Command aliases
+    let mut aliases: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // Add some default aliases
+    aliases.insert("ls".to_string(), "KEYS *".to_string());
+    aliases.insert("ll".to_string(), "KEYS *".to_string());
+    aliases.insert("del".to_string(), "DEL".to_string());
+    aliases.insert("setex".to_string(), "SETEX".to_string());
+    aliases.insert("getset".to_string(), "GETSET".to_string());
+
+    // Command timeout (in milliseconds)
+    let mut timeout: Option<u64> = None;
+
+    println!(
+        "{}",
+        "
+Welcome to resp-cli!"
+            .cyan()
+    );
     println!("{}", "Type commands or 'exit' to quit.".cyan());
     println!("{}", "Use Tab for command completion.".cyan());
-    
+
     loop {
-        let readline = rl.readline("resp> ");
+        let connection_info = format!("{}:{}", args.host, args.port);
+        let prompt = if in_transaction {
+            format!("resp(multi)[{}]> ", connection_info)
+        } else if in_pipeline {
+            format!("resp(pipeline)[{}]> ", connection_info)
+        } else if in_subscription {
+            format!("resp(sub)[{}]> ", connection_info)
+        } else {
+            format!("resp[{}]> ", connection_info)
+        };
+        let readline = rl.readline(&prompt);
         match readline {
             Ok(line) => {
                 let line_str = line.trim();
                 if line_str.is_empty() {
                     continue;
                 }
-                
+
                 if line_str == "exit" || line_str == "quit" {
+                    // If in transaction, discard it first
+                    if in_transaction {
+                        let _ = redis::cmd("DISCARD").query::<()>(&mut conn);
+                        println!("{}", "Transaction discarded".yellow());
+                    }
+                    // If in pipeline, clear it
+                    if in_pipeline {
+                        pipeline_commands.clear();
+                        println!("{}", "Pipeline cleared".yellow());
+                    }
                     break;
                 }
-                
-                let parts: Vec<&str> = line_str.split_whitespace().collect();
-                if parts.is_empty() {
-                    continue;
-                }
-                
-                let result = redis::cmd(parts[0])
-                    .arg(&parts[1..])
-                    .query(&mut conn);
-                
-                match result {
-                    Ok(value) => {
-                        println!("{}", formatter::format_value(&value));
+
+                // Check if the line ends with a backslash for multi-line input
+                if line_str.ends_with('\\') {
+                    // Start collecting multi-line input
+                    let mut multi_line = line_str.trim_end_matches('\\').to_string();
+
+                    loop {
+                        let readline = rl.readline("...> ");
+                        match readline {
+                            Ok(continued_line) => {
+                                let continued_line_str = continued_line.trim();
+                                if continued_line_str.ends_with('\\') {
+                                    multi_line.push(' ');
+                                    multi_line.push_str(continued_line_str.trim_end_matches('\\'));
+                                } else {
+                                    multi_line.push(' ');
+                                    multi_line.push_str(continued_line_str);
+                                    break;
+                                }
+                            }
+                            Err(ReadlineError::Interrupted) => {
+                                println!("{}", "^C".red());
+                                break;
+                            }
+                            Err(ReadlineError::Eof) => {
+                                println!("{}", "^D".red());
+                                break;
+                            }
+                            Err(err) => {
+                                println!("{}", format!("Error: {:?}", err).red());
+                                break;
+                            }
+                        }
                     }
-                    Err(e) => {
-                        println!("{}", format!("Error: {}", e).red());
+
+                    // Process the multi-line command
+                    let parts: Vec<&str> = multi_line.split_whitespace().collect();
+                    if !parts.is_empty() {
+                        process_command(
+                            &mut conn,
+                            &parts,
+                            &mut in_transaction,
+                            &mut transaction_commands,
+                            &mut in_pipeline,
+                            &mut pipeline_commands,
+                            &mut in_subscription,
+                            &mut aliases,
+                            &mut timeout,
+                        );
+                    }
+                } else {
+                    // Single line command
+                    let parts: Vec<&str> = line_str.split_whitespace().collect();
+                    if !parts.is_empty() {
+                        process_command(
+                            &mut conn,
+                            &parts,
+                            &mut in_transaction,
+                            &mut transaction_commands,
+                            &mut in_pipeline,
+                            &mut pipeline_commands,
+                            &mut in_subscription,
+                            &mut aliases,
+                            &mut timeout,
+                        );
                     }
                 }
             }
             Err(ReadlineError::Interrupted) => {
-                println!("{}", "^C".red());
-                break;
+                // If in transaction, discard it
+                if in_transaction {
+                    let _ = redis::cmd("DISCARD").query::<()>(&mut conn);
+                    println!("{}", "Transaction discarded".yellow());
+                    in_transaction = false;
+                    transaction_commands.clear();
+                } else if in_pipeline {
+                    // If in pipeline, clear it
+                    pipeline_commands.clear();
+                    println!("{}", "Pipeline cleared".yellow());
+                } else if in_subscription {
+                    // If in subscription, exit subscription mode
+                    println!("{}", "Exited subscription mode".yellow());
+                } else {
+                    println!("{}", "^C".red());
+                    break;
+                }
             }
             Err(ReadlineError::Eof) => {
+                // If in transaction, discard it
+                if in_transaction {
+                    let _ = redis::cmd("DISCARD").query::<()>(&mut conn);
+                    println!("{}", "Transaction discarded".yellow());
+                }
+                // If in pipeline, clear it
+                if in_pipeline {
+                    pipeline_commands.clear();
+                    println!("{}", "Pipeline cleared".yellow());
+                }
+                // If in subscription, exit subscription mode
+                if in_subscription {
+                    println!("{}", "Exited subscription mode".yellow());
+                }
                 println!("{}", "^D".red());
                 break;
             }
@@ -116,12 +258,571 @@ Welcome to resp-cli!".cyan());
             }
         }
     }
-    
+
     // Save history
     let _ = rl.save_history("resp-cli-history.txt");
-    
+
     println!("{}", "Goodbye!".cyan());
     Ok(())
+}
+
+fn process_command(
+    conn: &mut redis::Connection,
+    parts: &[&str],
+    in_transaction: &mut bool,
+    transaction_commands: &mut Vec<(String, Vec<String>)>,
+    in_pipeline: &mut bool,
+    pipeline_commands: &mut Vec<(String, Vec<String>)>,
+    in_subscription: &mut bool,
+    aliases: &mut std::collections::HashMap<String, String>,
+    timeout: &mut Option<u64>,
+) {
+    // Check if it's an ALIAS command
+    if parts[0].eq_ignore_ascii_case("ALIAS") {
+        // Handle ALIAS command separately to avoid borrowing issues
+        if parts.len() == 1 {
+            // List all aliases
+            if aliases.is_empty() {
+                println!("{}", "No aliases defined".dimmed());
+            } else {
+                println!("{}", "Defined aliases:".green());
+                for (alias, command) in aliases.iter() {
+                    println!("  {} -> {}", alias, command);
+                }
+            }
+        } else if parts.len() == 2 && parts[1] == "CLEAR" {
+            // Clear all aliases
+            aliases.clear();
+            println!("{}", "All aliases cleared".green().bold());
+        } else if parts.len() == 3 {
+            // Set an alias
+            let alias = parts[1].to_lowercase();
+            let cmd = parts[2];
+            aliases.insert(alias.clone(), cmd.to_string());
+            println!("{}", format!("Alias '{}' set to '{}'", alias, cmd).green().bold());
+        } else if parts.len() > 3 {
+            // Set an alias with arguments
+            let alias = parts[1].to_lowercase();
+            let cmd = parts[2..].join(" ");
+            aliases.insert(alias.clone(), cmd.clone());
+            println!("{}", format!("Alias '{}' set to '{}'", alias, cmd).green().bold());
+        } else {
+            println!("{}", "Usage: ALIAS [alias] [command] or ALIAS CLEAR".red());
+        }
+        return;
+    }
+
+    // Process aliases for other commands
+    let mut command_parts = parts.to_vec();
+    let first_part = parts[0].to_lowercase();
+    if let Some(alias) = aliases.get(&first_part) {
+        let alias_parts: Vec<&str> = alias.split_whitespace().collect();
+        if !alias_parts.is_empty() {
+            command_parts[0] = alias_parts[0];
+            // Add any additional arguments from the alias
+            if alias_parts.len() > 1 {
+                command_parts.splice(1..1, alias_parts[1..].iter().copied());
+            }
+        }
+    }
+
+    let command = command_parts[0].to_uppercase();
+
+    match command.as_str() {
+        "MULTI" => {
+            if *in_pipeline {
+                println!("{}", "Cannot start transaction in pipeline mode".red());
+                return;
+            }
+            if *in_subscription {
+                println!("{}", "Cannot start transaction in subscription mode".red());
+                return;
+            }
+
+            let result = redis::cmd("MULTI").query::<()>(conn);
+            match result {
+                Ok(_) => {
+                    println!("{}", "OK".green().bold());
+                    *in_transaction = true;
+                    transaction_commands.clear();
+                }
+                Err(e) => {
+                    println!("{}", format!("Error: {}", e).red());
+                }
+            }
+        }
+        "EXEC" => {
+            if *in_transaction {
+                // Execute the transaction
+                let result = redis::cmd("EXEC").query(conn);
+                match result {
+                    Ok(value) => {
+                        match value {
+                            redis::Value::Bulk(values) => {
+                                for (i, value) in values.iter().enumerate() {
+                                    println!("{}> {}", i + 1, formatter::format_value(value));
+                                }
+                            }
+                            redis::Value::Nil => {
+                                println!("{}", "(nil)".dimmed().italic());
+                            }
+                            _ => {
+                                println!("{}", formatter::format_value(&value));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("{}", format!("Error: {}", e).red());
+                    }
+                }
+                *in_transaction = false;
+                transaction_commands.clear();
+            } else if *in_pipeline {
+                // Execute the pipeline
+                let mut pipe = redis::pipe();
+
+                for (cmd_name, cmd_args) in pipeline_commands.iter() {
+                    let cmd = pipe.cmd(cmd_name);
+                    for arg in cmd_args {
+                        cmd.arg(arg);
+                    }
+                }
+
+                let result = pipe.query(conn);
+                match result {
+                    Ok(value) => {
+                        match value {
+                            redis::Value::Bulk(values) => {
+                                for (i, value) in values.iter().enumerate() {
+                                    println!("{}> {}", i + 1, formatter::format_value(value));
+                                }
+                            }
+                            _ => {
+                                println!("{}", formatter::format_value(&value));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("{}", format!("Error: {}", e).red());
+                    }
+                }
+
+                *in_pipeline = false;
+                pipeline_commands.clear();
+            } else {
+                println!("{}", "Not in transaction or pipeline".red());
+            }
+        }
+        "DISCARD" => {
+            if *in_transaction {
+                let result = redis::cmd("DISCARD").query::<()>(conn);
+                match result {
+                    Ok(_) => {
+                        println!("{}", "OK".green().bold());
+                        *in_transaction = false;
+                        transaction_commands.clear();
+                    }
+                    Err(e) => {
+                        println!("{}", format!("Error: {}", e).red());
+                    }
+                }
+            } else if *in_pipeline {
+                // Clear pipeline
+                pipeline_commands.clear();
+                *in_pipeline = false;
+                println!("{}", "Pipeline cleared".green().bold());
+            } else {
+                println!("{}", "Not in transaction or pipeline".red());
+            }
+        }
+        "PIPELINE" => {
+            if *in_transaction {
+                println!("{}", "Cannot start pipeline in transaction mode".red());
+                return;
+            }
+            if *in_subscription {
+                println!("{}", "Cannot start pipeline in subscription mode".red());
+                return;
+            }
+
+            *in_pipeline = true;
+            pipeline_commands.clear();
+            println!("{}", "Pipeline started".green().bold());
+        }
+        "TIMEOUT" => {
+            if command_parts.len() == 1 {
+                // Show current timeout
+                if let Some(t) = *timeout {
+                    println!("{}", format!("Current timeout: {} milliseconds", t).green());
+                } else {
+                    println!("{}", "No timeout set".dimmed());
+                }
+            } else if command_parts.len() == 2 {
+                // Set timeout
+                if command_parts[1] == "CLEAR" {
+                    *timeout = None;
+                    println!("{}", "Timeout cleared".green().bold());
+                } else if let Ok(t) = command_parts[1].parse::<u64>() {
+                    *timeout = Some(t);
+                    println!(
+                        "{}",
+                        format!("Timeout set to {} milliseconds", t).green().bold()
+                    );
+                } else {
+                    println!("{}", "Usage: TIMEOUT [milliseconds] or TIMEOUT CLEAR".red());
+                }
+            } else {
+                println!("{}", "Usage: TIMEOUT [milliseconds] or TIMEOUT CLEAR".red());
+            }
+        }
+        "SOURCE" => {
+            if command_parts.len() == 2 {
+                let file_path = command_parts[1];
+                match std::fs::read_to_string(file_path) {
+                    Ok(content) => {
+                        let commands: Vec<&str> = content.split('\n').collect();
+                        let mut success_count = 0;
+                        let mut error_count = 0;
+
+                        for (line_num, line) in commands.iter().enumerate() {
+                            let trimmed_line = line.trim();
+                            if trimmed_line.is_empty() || trimmed_line.starts_with('#') {
+                                continue;
+                            }
+
+                            let parts: Vec<&str> = trimmed_line.split_whitespace().collect();
+                            if !parts.is_empty() {
+                                println!("{}", format!("Executing: {}", trimmed_line).blue());
+                                let result = redis::cmd(parts[0]).arg(&parts[1..]).query(conn);
+
+                                match result {
+                                    Ok(value) => {
+                                        println!("{}", formatter::format_value(&value));
+                                        success_count += 1;
+                                    }
+                                    Err(e) => {
+                                        println!(
+                                            "{}",
+                                            format!("Error at line {}: {}", line_num + 1, e).red()
+                                        );
+                                        error_count += 1;
+                                    }
+                                }
+                            }
+                        }
+
+                        println!(
+                            "{}",
+                            format!(
+                                "Execution completed: {} successful, {} failed",
+                                success_count, error_count
+                            )
+                            .green()
+                            .bold()
+                        );
+                    }
+                    Err(e) => {
+                        println!("{}", format!("Error reading file: {}", e).red());
+                    }
+                }
+            } else {
+                println!("{}", "Usage: SOURCE <file_path>".red());
+            }
+        }
+        "CONFIG" => {
+            if command_parts.len() == 1 {
+                println!("{}", "Usage: CONFIG [GET|SET|RESETSTAT] [parameters]".red());
+            } else if command_parts[1] == "GET" {
+                if command_parts.len() == 2 {
+                    println!("{}", "Usage: CONFIG GET <pattern>".red());
+                } else {
+                    let pattern = command_parts[2];
+                    let result = redis::cmd("CONFIG").arg("GET").arg(pattern).query(conn);
+
+                    match result {
+                        Ok(value) => {
+                            println!("{}", formatter::format_value(&value));
+                        }
+                        Err(e) => {
+                            println!("{}", format!("Error: {}", e).red());
+                        }
+                    }
+                }
+            } else if command_parts[1] == "SET" {
+                if command_parts.len() < 4 {
+                    println!("{}", "Usage: CONFIG SET <parameter> <value>".red());
+                } else {
+                    let parameter = command_parts[2];
+                    let value = command_parts[3];
+                    let result = redis::cmd("CONFIG")
+                        .arg("SET")
+                        .arg(parameter)
+                        .arg(value)
+                        .query(conn);
+
+                    match result {
+                        Ok(value) => {
+                            println!("{}", formatter::format_value(&value));
+                        }
+                        Err(e) => {
+                            println!("{}", format!("Error: {}", e).red());
+                        }
+                    }
+                }
+            } else if command_parts[1] == "RESETSTAT" {
+                let result = redis::cmd("CONFIG").arg("RESETSTAT").query(conn);
+
+                match result {
+                    Ok(value) => {
+                        println!("{}", formatter::format_value(&value));
+                    }
+                    Err(e) => {
+                        println!("{}", format!("Error: {}", e).red());
+                    }
+                }
+            } else {
+                println!("{}", "Usage: CONFIG [GET|SET|RESETSTAT] [parameters]".red());
+            }
+        }
+        "SUBSCRIBE" | "PSUBSCRIBE" => {
+            if *in_transaction {
+                println!("{}", "Cannot subscribe in transaction mode".red());
+                return;
+            }
+            if *in_pipeline {
+                println!("{}", "Cannot subscribe in pipeline mode".red());
+                return;
+            }
+
+            // Start subscription
+            *in_subscription = true;
+
+            // Create a new connection for subscription (to avoid blocking the main connection)
+            let args = Args::parse();
+            let mut sub_conn = match connect(
+                &args.host,
+                &args.port,
+                args.password.as_deref(),
+                args.unix.as_deref(),
+                args.tls,
+                args.tls_ca_cert.as_deref(),
+                args.tls_client_cert.as_deref(),
+                args.tls_client_key.as_deref(),
+            ) {
+                Ok(conn) => conn,
+                Err(e) => {
+                    println!(
+                        "{}",
+                        format!("Error connecting for subscription: {}", e).red()
+                    );
+                    *in_subscription = false;
+                    return;
+                }
+            };
+
+            // Send subscribe command
+            let result = redis::cmd(command_parts[0])
+                .arg(&command_parts[1..])
+                .query(&mut sub_conn);
+
+            match result {
+                Ok(value) => {
+                    println!("{}", formatter::format_value(&value));
+                }
+                Err(e) => {
+                    println!("{}", format!("Error: {}", e).red());
+                    *in_subscription = false;
+                    return;
+                }
+            }
+            println!(
+                "{}",
+                "Entering subscription mode. Press Ctrl+C to exit.".yellow()
+            );
+
+            // Start receiving messages
+            loop {
+                match redis::cmd("PING").query::<()>(&mut sub_conn) {
+                    Ok(_) => {
+                        // This should not happen in subscription mode
+                        break;
+                    }
+                    Err(_) => {
+                        // In subscription mode, we should receive messages instead of PING responses
+                        match redis::cmd("").query(&mut sub_conn) {
+                            Ok(value) => {
+                                println!("{}", formatter::format_value(&value));
+                            }
+                            Err(e) => {
+                                println!("{}", format!("Error receiving message: {}", e).red());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            *in_subscription = false;
+        }
+        "UNSUBSCRIBE" | "PUNSUBSCRIBE" => {
+            if !*in_subscription {
+                println!("{}", "Not in subscription mode".red());
+                return;
+            }
+
+            // Execute unsubscribe command
+            let result = redis::cmd(command_parts[0])
+                .arg(&command_parts[1..])
+                .query(conn);
+
+            match result {
+                Ok(value) => {
+                    println!("{}", formatter::format_value(&value));
+                }
+                Err(e) => {
+                    println!("{}", format!("Error: {}", e).red());
+                }
+            }
+        }
+        "PUBLISH" => {
+            if *in_transaction {
+                // Add to transaction queue
+                let cmd_name = command_parts[0].to_string();
+                let cmd_args: Vec<String> =
+                    command_parts[1..].iter().map(|s| s.to_string()).collect();
+                transaction_commands.push((cmd_name, cmd_args));
+                println!("{}", "QUEUED".green().bold());
+            } else if *in_pipeline {
+                // Add to pipeline queue
+                let cmd_name = command_parts[0].to_string();
+                let cmd_args: Vec<String> =
+                    command_parts[1..].iter().map(|s| s.to_string()).collect();
+                pipeline_commands.push((cmd_name, cmd_args));
+                println!("{}", "QUEUED".green().bold());
+            } else {
+                // Execute immediately
+                let result = redis::cmd(command_parts[0])
+                    .arg(&command_parts[1..])
+                    .query(conn);
+
+                match result {
+                    Ok(value) => {
+                        println!("{}", formatter::format_value(&value));
+                    }
+                    Err(e) => {
+                        let error_msg = e.to_string();
+                        if error_msg.contains("NOAUTH") {
+                            println!("{}", "Error: Authentication required".red());
+                            println!(
+                                "{}",
+                                "Please connect with the correct password using -a option".yellow()
+                            );
+                        } else if error_msg.contains("ERR wrong number of arguments") {
+                            println!(
+                                "{}",
+                                format!(
+                                    "Error: Wrong number of arguments for command '{}'",
+                                    command_parts[0]
+                                )
+                                .red()
+                            );
+                            println!(
+                                "{}",
+                                "Please check the command syntax and try again".yellow()
+                            );
+                        } else if error_msg.contains("ERR unknown command") {
+                            println!(
+                                "{}",
+                                format!("Error: Unknown command '{}'", command_parts[0]).red()
+                            );
+                            println!("{}", "Please check the command name and try again".yellow());
+                        } else if error_msg.contains("CONNECTION REFUSED") {
+                            println!("{}", "Error: Connection refused".red());
+                            println!(
+                                "{}",
+                                "Please check if the Redis server is running and accessible"
+                                    .yellow()
+                            );
+                        } else {
+                            println!("{}", format!("Error: {}", e).red());
+                        }
+                    }
+                }
+            }
+        }
+        _ => {
+            if *in_transaction {
+                // Add to transaction queue
+                let cmd_name = command_parts[0].to_string();
+                let cmd_args: Vec<String> =
+                    command_parts[1..].iter().map(|s| s.to_string()).collect();
+                transaction_commands.push((cmd_name, cmd_args));
+                println!("{}", "QUEUED".green().bold());
+            } else if *in_pipeline {
+                // Add to pipeline queue
+                let cmd_name = command_parts[0].to_string();
+                let cmd_args: Vec<String> =
+                    command_parts[1..].iter().map(|s| s.to_string()).collect();
+                pipeline_commands.push((cmd_name, cmd_args));
+                println!("{}", "QUEUED".green().bold());
+            } else if *in_subscription {
+                // In subscription mode, only certain commands are allowed
+                println!(
+                    "{}",
+                    "Only subscription-related commands are allowed in subscription mode".red()
+                );
+            } else {
+                // Execute immediately
+                let result = redis::cmd(command_parts[0])
+                    .arg(&command_parts[1..])
+                    .query(conn);
+
+                match result {
+                    Ok(value) => {
+                        println!("{}", formatter::format_value(&value));
+                    }
+                    Err(e) => {
+                        let error_msg = e.to_string();
+                        if error_msg.contains("NOAUTH") {
+                            println!("{}", "Error: Authentication required".red());
+                            println!(
+                                "{}",
+                                "Please connect with the correct password using -a option".yellow()
+                            );
+                        } else if error_msg.contains("ERR wrong number of arguments") {
+                            println!(
+                                "{}",
+                                format!(
+                                    "Error: Wrong number of arguments for command '{}'",
+                                    command_parts[0]
+                                )
+                                .red()
+                            );
+                            println!(
+                                "{}",
+                                "Please check the command syntax and try again".yellow()
+                            );
+                        } else if error_msg.contains("ERR unknown command") {
+                            println!(
+                                "{}",
+                                format!("Error: Unknown command '{}'", command_parts[0]).red()
+                            );
+                            println!("{}", "Please check the command name and try again".yellow());
+                        } else if error_msg.contains("CONNECTION REFUSED") {
+                            println!("{}", "Error: Connection refused".red());
+                            println!(
+                                "{}",
+                                "Please check if the Redis server is running and accessible"
+                                    .yellow()
+                            );
+                        } else {
+                            println!("{}", format!("Error: {}", e).red());
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 struct MyHelper {
@@ -130,7 +831,7 @@ struct MyHelper {
 
 impl Completer for MyHelper {
     type Candidate = Pair;
-    
+
     fn complete(
         &self,
         line: &str,
@@ -142,7 +843,24 @@ impl Completer for MyHelper {
 }
 
 impl Helper for MyHelper {}
-impl Highlighter for MyHelper {}
+impl Highlighter for MyHelper {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> std::borrow::Cow<'l, str> {
+        // Simple highlighting for now
+        line.into()
+    }
+
+    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
+        &'s self,
+        prompt: &'p str,
+        default: bool,
+    ) -> std::borrow::Cow<'b, str> {
+        if default {
+            prompt.green().to_string().into()
+        } else {
+            prompt.to_string().into()
+        }
+    }
+}
 impl Hinter for MyHelper {
     type Hint = String;
 }
