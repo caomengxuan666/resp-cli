@@ -42,6 +42,9 @@ struct Args {
 
     #[arg(long)]
     tls_client_key: Option<String>, // TLS client key file
+
+    #[arg(short = 'n', long, default_value = "0")]
+    db: i64, // Database number
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -61,6 +64,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     println!("{}", "Connected successfully!".green());
+
+    // Select database if not default (0)
+    if args.db != 0 {
+        let result: redis::RedisResult<()> = redis::cmd("SELECT").arg(args.db).query(&mut conn);
+        match result {
+            Ok(_) => {
+                println!("{}", format!("Selected database {}", args.db).green());
+            }
+            Err(e) => {
+                println!("{}", format!("Warning: Failed to select database {}: {}", args.db, e).yellow());
+            }
+        }
+    }
+
     println!("{}", "Fetching command documentation...".blue());
 
     let command_docs = CommandDocs::fetch(&mut conn)?;
@@ -94,6 +111,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Pub/Sub state
     let mut in_subscription = false;
 
+    // Monitor state
+    let mut in_monitor = false;
+
     // Command aliases
     let mut aliases: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     // Add some default aliases
@@ -115,16 +135,26 @@ Welcome to resp-cli!"
     println!("{}", "Type commands or 'exit' to quit.".cyan());
     println!("{}", "Use Tab for command completion.".cyan());
 
+    // Track current database number
+    let mut current_db = args.db;
+
     loop {
         let connection_info = format!("{}:{}", args.host, args.port);
-        let prompt = if in_transaction {
-            format!("resp(multi)[{}]> ", connection_info)
-        } else if in_pipeline {
-            format!("resp(pipeline)[{}]> ", connection_info)
-        } else if in_subscription {
-            format!("resp(sub)[{}]> ", connection_info)
+        let db_info = if current_db != 0 {
+            format!("[{}]", current_db)
         } else {
-            format!("resp[{}]> ", connection_info)
+            String::new()
+        };
+        let prompt = if in_transaction {
+            format!("resp(multi)[{}{}]> ", connection_info, db_info)
+        } else if in_pipeline {
+            format!("resp(pipeline)[{}{}]> ", connection_info, db_info)
+        } else if in_subscription {
+            format!("resp(sub)[{}{}]> ", connection_info, db_info)
+        } else if in_monitor {
+            format!("resp(monitor)[{}{}]> ", connection_info, db_info)
+        } else {
+            format!("resp[{}{}]> ", connection_info, db_info)
         };
         let readline = rl.readline(&prompt);
         match readline {
@@ -144,6 +174,11 @@ Welcome to resp-cli!"
                     if in_pipeline {
                         pipeline_commands.clear();
                         println!("{}", "Pipeline cleared".yellow());
+                    }
+                    // If in monitor, exit monitor mode
+                    if in_monitor {
+                        in_monitor = false;
+                        println!("{}", "Exited monitor mode".yellow());
                     }
                     break;
                 }
@@ -193,8 +228,10 @@ Welcome to resp-cli!"
                             &mut in_pipeline,
                             &mut pipeline_commands,
                             &mut in_subscription,
+                            &mut in_monitor,
                             &mut aliases,
                             &mut timeout,
+                            &mut current_db,
                         );
                     }
                 } else {
@@ -209,8 +246,10 @@ Welcome to resp-cli!"
                             &mut in_pipeline,
                             &mut pipeline_commands,
                             &mut in_subscription,
+                            &mut in_monitor,
                             &mut aliases,
                             &mut timeout,
+                            &mut current_db,
                         );
                     }
                 }
@@ -229,6 +268,10 @@ Welcome to resp-cli!"
                 } else if in_subscription {
                     // If in subscription, exit subscription mode
                     println!("{}", "Exited subscription mode".yellow());
+                } else if in_monitor {
+                    // If in monitor, exit monitor mode
+                    in_monitor = false;
+                    println!("{}", "Exited monitor mode".yellow());
                 } else {
                     println!("{}", "^C".red());
                     break;
@@ -248,6 +291,11 @@ Welcome to resp-cli!"
                 // If in subscription, exit subscription mode
                 if in_subscription {
                     println!("{}", "Exited subscription mode".yellow());
+                }
+                // If in monitor, exit monitor mode
+                if in_monitor {
+                    in_monitor = false;
+                    println!("{}", "Exited monitor mode".yellow());
                 }
                 println!("{}", "^D".red());
                 break;
@@ -274,8 +322,10 @@ fn process_command(
     in_pipeline: &mut bool,
     pipeline_commands: &mut Vec<(String, Vec<String>)>,
     in_subscription: &mut bool,
+    in_monitor: &mut bool,
     aliases: &mut std::collections::HashMap<String, String>,
     timeout: &mut Option<u64>,
+    current_db: &mut i64,
 ) {
     // Check if it's an ALIAS command
     if parts[0].eq_ignore_ascii_case("ALIAS") {
@@ -336,6 +386,10 @@ fn process_command(
             }
             if *in_subscription {
                 println!("{}", "Cannot start transaction in subscription mode".red());
+                return;
+            }
+            if *in_monitor {
+                println!("{}", "Cannot start transaction in monitor mode".red());
                 return;
             }
 
@@ -444,10 +498,103 @@ fn process_command(
                 println!("{}", "Cannot start pipeline in subscription mode".red());
                 return;
             }
+            if *in_monitor {
+                println!("{}", "Cannot start pipeline in monitor mode".red());
+                return;
+            }
 
             *in_pipeline = true;
             pipeline_commands.clear();
             println!("{}", "Pipeline started".green().bold());
+        }
+        "MONITOR" => {
+            if *in_transaction {
+                println!("{}", "Cannot start monitor in transaction mode".red());
+                return;
+            }
+            if *in_pipeline {
+                println!("{}", "Cannot start monitor in pipeline mode".red());
+                return;
+            }
+            if *in_subscription {
+                println!("{}", "Cannot start monitor in subscription mode".red());
+                return;
+            }
+
+            // Start monitor mode
+            *in_monitor = true;
+
+            // Create a new connection for monitoring (to avoid blocking the main connection)
+            let args = Args::parse();
+            let mut monitor_conn = match connect(
+                &args.host,
+                &args.port,
+                args.password.as_deref(),
+                args.unix.as_deref(),
+                args.tls,
+                args.tls_ca_cert.as_deref(),
+                args.tls_client_cert.as_deref(),
+                args.tls_client_key.as_deref()
+            ) {
+                Ok(conn) => conn,
+                Err(e) => {
+                    println!("{}", format!("Error connecting for monitor: {}", e).red());
+                    *in_monitor = false;
+                    return;
+                }
+            };
+
+            // Send MONITOR command
+            let result = redis::cmd("MONITOR").query::<()>(&mut monitor_conn);
+
+            match result {
+                Ok(_) => {
+                    println!("{}", "OK".green().bold());
+                    println!("{}", "Entering monitor mode. Press Ctrl+C to exit.".yellow());
+                }
+                Err(e) => {
+                    println!("{}", format!("Error: {}", e).red());
+                    *in_monitor = false;
+                    return;
+                }
+            }
+
+            // Start receiving monitor messages
+            loop {
+                // Try to get the next message from the connection
+                let result: redis::RedisResult<redis::Value> = redis::cmd("").query(&mut monitor_conn);
+                match result {
+                    Ok(value) => {
+                        println!("{}", formatter::format_value(&value));
+                    }
+                    Err(_) => {
+                        // Connection closed or error, exit monitor mode
+                        break;
+                    }
+                }
+            }
+
+            *in_monitor = false;
+        }
+        "SELECT" => {
+            if command_parts.len() == 2 {
+                if let Ok(db_num) = command_parts[1].parse::<i64>() {
+                    let result = redis::cmd("SELECT").arg(db_num).query::<()>(conn);
+                    match result {
+                        Ok(_) => {
+                            *current_db = db_num;
+                            println!("{}", "OK".green().bold());
+                        }
+                        Err(e) => {
+                            println!("{}", format!("Error: {}", e).red());
+                        }
+                    }
+                } else {
+                    println!("{}", "Usage: SELECT <db_number>".red());
+                }
+            } else {
+                println!("{}", "Usage: SELECT <db_number>".red());
+            }
         }
         "TIMEOUT" => {
             if command_parts.len() == 1 {
@@ -591,6 +738,10 @@ fn process_command(
             }
             if *in_pipeline {
                 println!("{}", "Cannot subscribe in pipeline mode".red());
+                return;
+            }
+            if *in_monitor {
+                println!("{}", "Cannot subscribe in monitor mode".red());
                 return;
             }
 
@@ -770,6 +921,12 @@ fn process_command(
                 println!(
                     "{}",
                     "Only subscription-related commands are allowed in subscription mode".red()
+                );
+            } else if *in_monitor {
+                // In monitor mode, only certain commands are allowed
+                println!(
+                    "{}",
+                    "Only MONITOR command is allowed in monitor mode".red()
                 );
             } else {
                 // Execute immediately
