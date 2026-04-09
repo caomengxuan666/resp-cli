@@ -1,0 +1,13 @@
+[package]
+name = "resp-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rustyline = "10.1.0"
+rustyline-derive = "0.4.0"
+redis = "0.25.3"
+clap = { version = "4.4.7", features = ["derive"] }
+serde = { version = "1.0.189", features = ["derive"] }
+serde_json = "1.0.107"
+colored = "2.0.4"
