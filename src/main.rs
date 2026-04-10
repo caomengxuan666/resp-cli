@@ -7,6 +7,8 @@ use colored::Colorize;
 use std::io::Read;
 use rustyline::error::ReadlineError;
 use rustyline::{Config, Editor};
+use dirs::home_dir;
+use std::path::PathBuf;
 
 use resp_cli::Args;
 use resp_cli::CommandDocs;
@@ -20,71 +22,92 @@ use resp_cli::read_respclirc;
 use resp_cli::print_welcome;
 use resp_cli::get_prompt;
 
+/// Get the path to the history file
+fn get_history_path() -> PathBuf {
+    if let Some(home) = home_dir() {
+        home.join(".resp-cli-history")
+    } else {
+        PathBuf::from("resp-cli-history.txt") // Fallback to current directory
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Read config from .respclirc
-    let config = read_respclirc();
+    let mut config = read_respclirc();
     
     // Parse command line arguments
     let args = Args::parse();
 
-    // Use config values as defaults if command line arguments are not specified
-    let host = if !args.host.is_empty() && args.host != "localhost" {
-        &args.host
-    } else if let Some(h) = config.get("host") {
-        h
-    } else {
-        "localhost"
+    // Override config with command line arguments if provided
+    if !args.host.is_empty() && args.host != "localhost" {
+        config.host = args.host;
+    }
+
+    if !args.port.is_empty() && args.port != "6379" {
+        config.port = args.port;
+    }
+
+    if args.password.is_some() {
+        config.password = args.password;
+    }
+
+    if args.unix.is_some() {
+        config.unix = args.unix;
+    }
+
+    if args.tls {
+        config.tls = true;
+    }
+
+    if args.tls_ca_cert.is_some() {
+        config.tls_ca_cert = args.tls_ca_cert;
+    }
+
+    if args.tls_client_cert.is_some() {
+        config.tls_client_cert = args.tls_client_cert;
+    }
+
+    if args.tls_client_key.is_some() {
+        config.tls_client_key = args.tls_client_key;
+    }
+
+    if args.db != 0 {
+        config.db = args.db;
+    }
+
+    if args.repeat.is_some() {
+        config.repeat = args.repeat;
+    }
+
+    if args.interval != 0.0 {
+        config.interval = args.interval;
+    }
+
+    if args.raw {
+        config.raw = true;
+    }
+
+    if args.from_stdin {
+        config.from_stdin = true;
+    }
+
+    if args.scan {
+        config.scan = true;
+    }
+
+    if args.client_name.is_some() {
+        config.client_name = args.client_name;
     };
 
-    let port = if !args.port.is_empty() && args.port != "6379" {
-        &args.port
-    } else if let Some(p) = config.get("port") {
-        p
-    } else {
-        "6379"
-    };
-
-    let password = if args.password.is_some() {
-        args.password.as_deref()
-    } else if let Some(p) = config.get("password") {
-        Some(p.as_str())
-    } else {
-        None
-    };
-
-    let unix = if args.unix.is_some() {
-        args.unix.as_deref()
-    } else if let Some(u) = config.get("unix") {
-        Some(u.as_str())
-    } else {
-        None
-    };
-
-    let tls = args.tls || config.contains_key("tls");
-
-    let tls_ca_cert = if args.tls_ca_cert.is_some() {
-        args.tls_ca_cert.as_deref()
-    } else if let Some(c) = config.get("tls-ca-cert") {
-        Some(c.as_str())
-    } else {
-        None
-    };
-
-    let tls_client_cert = if args.tls_client_cert.is_some() {
-        args.tls_client_cert.as_deref()
-    } else if let Some(c) = config.get("tls-client-cert") {
-        Some(c.as_str())
-    } else {
-        None
-    };
-
-    let tls_client_key = if args.tls_client_key.is_some() {
-        args.tls_client_key.as_deref()
-    } else if let Some(k) = config.get("tls-client-key") {
-        Some(k.as_str())
-    } else {
-        None
-    };
+    // Extract connection parameters
+    let host = config.host.as_str();
+    let port = config.port.as_str();
+    let password = config.password.as_deref();
+    let unix = config.unix.as_deref();
+    let tls = config.tls;
+    let tls_ca_cert = config.tls_ca_cert.as_deref();
+    let tls_client_cert = config.tls_client_cert.as_deref();
+    let tls_client_key = config.tls_client_key.as_deref();
 
     let mut conn = connect(
         host,
@@ -98,15 +121,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // Select database if not default (0)
-    if args.db != 0 {
-        let result: redis::RedisResult<()> = redis::cmd("SELECT").arg(args.db).query(&mut conn);
+    if config.db != 0 {
+        let result: redis::RedisResult<()> = redis::cmd("SELECT").arg(config.db).query(&mut conn);
         if let Err(e) = result {
-            println!("{}", format!("Warning: Failed to select database {}: {}", args.db, e).yellow());
+            println!("{}", format!("Warning: Failed to select database {}: {}", config.db, e).yellow());
         }
     }
 
     // Set client name if specified
-    if let Some(client_name) = &args.client_name {
+    if let Some(client_name) = &config.client_name {
         let result: redis::RedisResult<()> = redis::cmd("CLIENT").arg("SETNAME").arg(client_name).query(&mut conn);
         if let Err(e) = result {
             println!("{}", format!("Warning: Failed to set client name: {}", e).yellow());
@@ -114,35 +137,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Check if there are command arguments
-    let cmd_args: Vec<String> = std::env::args().skip(1).collect();
-    let mut command_parts: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < cmd_args.len() {
-        let arg = &cmd_args[i];
-        if arg.starts_with('-') {
-            // This is an option
-            if arg == "-r" || arg == "--repeat" || arg == "-i" || arg == "--interval" {
-                // These options have values, skip the next argument
-                i += 2;
-            } else if arg == "-n" || arg == "--db" || arg == "-a" || arg == "--password" || 
-                      arg == "-H" || arg == "--host" || arg == "-P" || arg == "--port" ||
-                      arg == "--unix" || arg == "--tls" || arg == "--tls-ca-cert" ||
-                      arg == "--tls-client-cert" || arg == "--tls-client-key" {
-                // These options have values, skip the next argument
-                i += 2;
-            } else {
-                // These options don't have values
-                i += 1;
-            }
-        } else {
-            // This is a command or argument
-            command_parts.push(arg.clone());
-            i += 1;
-        }
-    }
+    let command_parts = args.command;
 
     // Handle scan mode
-    if args.scan {
+    if config.scan {
         let mut cursor: u64 = 0;
         let pattern = if !command_parts.is_empty() {
             command_parts[0].clone()
@@ -182,7 +180,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !command_parts.is_empty() {
         // Handle from stdin
         let mut final_command_parts = command_parts;
-        if args.from_stdin {
+        if config.from_stdin {
             // Read from stdin
             let mut stdin = std::io::stdin();
             let mut input = String::new();
@@ -198,7 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Execute the command
-        let repeat_count = args.repeat.unwrap_or(1);
+        let repeat_count = config.repeat.unwrap_or(1);
         for i in 0..repeat_count {
             let result = redis::cmd(&final_command_parts[0])
                 .arg(&final_command_parts[1..])
@@ -206,7 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             match result {
                 Ok(value) => {
-                    if args.raw {
+                    if config.raw {
                         // Raw output mode
                         print_raw_value(&value);
                     } else {
@@ -220,8 +218,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Wait for interval if specified
-            if args.interval > 0.0 && i < repeat_count - 1 {
-                std::thread::sleep(std::time::Duration::from_secs_f64(args.interval));
+            if config.interval > 0.0 && i < repeat_count - 1 {
+                std::thread::sleep(std::time::Duration::from_secs_f64(config.interval));
             }
         }
         return Ok(());
@@ -231,18 +229,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let command_docs = CommandDocs::fetch(&mut conn)?;
 
     let completer = CommandCompleter::new(command_docs);
-    let config = Config::builder()
+    let rl_config = Config::builder()
         .history_ignore_space(true)
         .auto_add_history(true)
         .build();
 
-    let h = MyHelper { completer };
+    let mut h = MyHelper { completer };
 
-    let mut rl = Editor::with_config(config)?;
+    // Set the connection for key completion
+    h.set_connection(&mut conn as *mut _);
+
+    let mut rl = Editor::with_config(rl_config)?;
     rl.set_helper(Some(h));
 
-    // Load history if it exists
-    let _ = rl.load_history("resp-cli-history.txt");
+    // Load history from user's home directory
+    let history_path = get_history_path();
+    let _ = rl.load_history(history_path.to_str().unwrap());
 
     // Transaction state
     let mut in_transaction = false;
@@ -266,6 +268,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     aliases.insert("del".to_string(), "DEL".to_string());
     aliases.insert("setex".to_string(), "SETEX".to_string());
     aliases.insert("getset".to_string(), "GETSET".to_string());
+    aliases.insert("incr".to_string(), "INCR".to_string());
+    aliases.insert("decr".to_string(), "DECR".to_string());
+    aliases.insert("expire".to_string(), "EXPIRE".to_string());
+    aliases.insert("ttl".to_string(), "TTL".to_string());
+    aliases.insert("ping".to_string(), "PING".to_string());
+    aliases.insert("info".to_string(), "INFO".to_string());
+    aliases.insert("keys".to_string(), "KEYS".to_string());
+    aliases.insert("exists".to_string(), "EXISTS".to_string());
+    aliases.insert("type".to_string(), "TYPE".to_string());
+    aliases.insert("rename".to_string(), "RENAME".to_string());
+    aliases.insert("dbsize".to_string(), "DBSIZE".to_string());
+    aliases.insert("flushdb".to_string(), "FLUSHDB".to_string());
+    aliases.insert("flushall".to_string(), "FLUSHALL".to_string());
 
     // Command timeout (in milliseconds)
     let mut timeout: Option<u64> = None;
@@ -274,10 +289,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     print_welcome();
 
     // Track current database number
-    let mut current_db = args.db;
+    let mut current_db = config.db;
 
     loop {
-        let connection_info = format!("{}:{}", args.host, args.port);
+        let connection_info = format!("{}:{}", config.host, config.port);
         let db_info = if current_db != 0 {
             format!("[{}]", current_db)
         } else {
@@ -436,7 +451,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Save history
-    let _ = rl.save_history("resp-cli-history.txt");
+    let history_path = get_history_path();
+    let _ = rl.save_history(history_path.to_str().unwrap());
 
     println!("{}", "Goodbye!".cyan());
     Ok(())

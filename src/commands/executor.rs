@@ -30,6 +30,73 @@ pub fn print_raw_value(value: &Value) {
     }
 }
 
+/// Handle Redis error and print friendly error message
+fn handle_error(e: &redis::RedisError, command: &str) {
+    let error_msg = e.to_string();
+    if error_msg.contains("NOAUTH") {
+        println!("{}", "Error: Authentication required".red());
+        println!(
+            "{}",
+            "Please connect with the correct password using -a option".yellow()
+        );
+    } else if error_msg.contains("ERR wrong number of arguments") {
+        println!(
+            "{}",
+            format!(
+                "Error: Wrong number of arguments for command '{}'",
+                command
+            )
+            .red()
+        );
+        println!(
+            "{}",
+            "Please check the command syntax and try again".yellow()
+        );
+    } else if error_msg.contains("ERR unknown command") {
+        println!(
+            "{}",
+            format!("Error: Unknown command '{}'", command).red()
+        );
+        println!("{}", "Please check the command name and try again".yellow());
+    } else if error_msg.contains("CONNECTION REFUSED") {
+        println!("{}", "Error: Connection refused".red());
+        println!(
+            "{}",
+            "Please check if the Redis server is running and accessible"
+                .yellow()
+        );
+    } else if error_msg.contains("ERR no such key") {
+        println!(
+            "{}",
+            "Error: Key does not exist".red()
+        );
+        println!(
+            "{}",
+            "Please check the key name and try again".yellow()
+        );
+    } else if error_msg.contains("ERR WRONGPASS") {
+        println!(
+            "{}",
+            "Error: Wrong password".red()
+        );
+        println!(
+            "{}",
+            "Please provide the correct password using -a option".yellow()
+        );
+    } else if error_msg.contains("ERR DB index is out of range") {
+        println!(
+            "{}",
+            "Error: Database index is out of range".red()
+        );
+        println!(
+            "{}",
+            "Please use a database index between 0 and 15".yellow()
+        );
+    } else {
+        println!("{}", format!("Error: {}", e).red());
+    }
+}
+
 /// Process a command
 pub fn process_command(
     conn: &mut Connection,
@@ -68,6 +135,28 @@ pub fn process_command(
             // Clear all aliases
             aliases.clear();
             println!("{}", "All aliases cleared".green().bold());
+        } else if parts.len() == 3 && parts[1] == "EXPORT" {
+            // Export aliases to file
+            let file_path = parts[2];
+            match std::fs::write(file_path, serde_json::to_string_pretty(aliases).unwrap()) {
+                Ok(_) => println!("{}", format!("Aliases exported to '{}'", file_path).green().bold()),
+                Err(e) => println!("{}", format!("Error exporting aliases: {}", e).red()),
+            }
+        } else if parts.len() == 3 && parts[1] == "IMPORT" {
+            // Import aliases from file
+            let file_path = parts[2];
+            match std::fs::read_to_string(file_path) {
+                Ok(content) => {
+                    match serde_json::from_str::<std::collections::HashMap<String, String>>(&content) {
+                        Ok(imported_aliases) => {
+                            aliases.extend(imported_aliases);
+                            println!("{}", format!("Aliases imported from '{}'", file_path).green().bold());
+                        }
+                        Err(e) => println!("{}", format!("Error parsing alias file: {}", e).red()),
+                    }
+                }
+                Err(e) => println!("{}", format!("Error reading alias file: {}", e).red()),
+            }
         } else if parts.len() == 3 {
             // Set an alias
             let alias = parts[1].to_lowercase();
@@ -81,7 +170,7 @@ pub fn process_command(
             aliases.insert(alias.clone(), cmd.clone());
             println!("{}", format!("Alias '{}' set to '{}'", alias, cmd).green().bold());
         } else {
-            println!("{}", "Usage: ALIAS [alias] [command] or ALIAS CLEAR".red());
+            println!("{}", "Usage: ALIAS [alias] [command] or ALIAS CLEAR or ALIAS EXPORT <file> or ALIAS IMPORT <file>".red());
         }
         return;
     }
@@ -150,7 +239,7 @@ pub fn process_command(
                         }
                     }
                     Err(e) => {
-                        println!("{}", format!("Error: {}", e).red());
+                        handle_error(&e, command_parts[0]);
                     }
                 }
                 *in_transaction = false;
@@ -181,7 +270,7 @@ pub fn process_command(
                         }
                     }
                     Err(e) => {
-                        println!("{}", format!("Error: {}", e).red());
+                        handle_error(&e, command_parts[0]);
                     }
                 }
 
@@ -201,7 +290,7 @@ pub fn process_command(
                         transaction_commands.clear();
                     }
                     Err(e) => {
-                        println!("{}", format!("Error: {}", e).red());
+                        handle_error(&e, command_parts[0]);
                     }
                 }
             } else if *in_pipeline {
@@ -277,7 +366,7 @@ pub fn process_command(
                     println!("{}", "Entering monitor mode. Press Ctrl+C to exit.".yellow());
                 }
                 Err(e) => {
-                    println!("{}", format!("Error: {}", e).red());
+                    handle_error(&e, "MONITOR");
                     *in_monitor = false;
                     return;
                 }
@@ -310,7 +399,7 @@ pub fn process_command(
                             println!("{}", "OK".green().bold());
                         }
                         Err(e) => {
-                            println!("{}", format!("Error: {}", e).red());
+                            handle_error(&e, command_parts[0]);
                         }
                     }
                 } else {
@@ -372,12 +461,13 @@ pub fn process_command(
                                         success_count += 1;
                                     }
                                     Err(e) => {
-                                        println!(
-                                            "{}",
-                                            format!("Error at line {}: {}", line_num + 1, e).red()
-                                        );
-                                        error_count += 1;
-                                    }
+                        println!(
+                            "{}",
+                            format!("Error at line {}:", line_num + 1).red()
+                        );
+                        handle_error(&e, parts[0]);
+                        error_count += 1;
+                    }
                                 }
                             }
                         }
@@ -415,7 +505,7 @@ pub fn process_command(
                             println!("{}", format_value(&value));
                         }
                         Err(e) => {
-                            println!("{}", format!("Error: {}", e).red());
+                            handle_error(&e, command_parts[0]);
                         }
                     }
                 }
@@ -436,7 +526,7 @@ pub fn process_command(
                             println!("{}", format_value(&value));
                         }
                         Err(e) => {
-                            println!("{}", format!("Error: {}", e).red());
+                            handle_error(&e, command_parts[0]);
                         }
                     }
                 }
@@ -448,7 +538,7 @@ pub fn process_command(
                         println!("{}", format_value(&value));
                     }
                     Err(e) => {
-                        println!("{}", format!("Error: {}", e).red());
+                        handle_error(&e, command_parts[0]);
                     }
                 }
             } else {
@@ -505,7 +595,7 @@ pub fn process_command(
                     println!("{}", format_value(&value));
                 }
                 Err(e) => {
-                    println!("{}", format!("Error: {}", e).red());
+                    handle_error(&e, command_parts[0]);
                     *in_subscription = false;
                     return;
                 }

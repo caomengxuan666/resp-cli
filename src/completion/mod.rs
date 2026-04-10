@@ -1,15 +1,25 @@
 use rustyline::completion::Pair;
 use rustyline::error::ReadlineError;
 
-use crate::command_docs::CommandDocs;
+use crate::commands::command_docs::CommandDocs;
+
+use redis::Connection;
 
 pub struct CommandCompleter {
     command_docs: CommandDocs,
+    conn: Option<*mut Connection>,
 }
 
 impl CommandCompleter {
     pub fn new(command_docs: CommandDocs) -> Self {
-        Self { command_docs }
+        Self { 
+            command_docs, 
+            conn: None 
+        }
+    }
+
+    pub fn set_connection(&mut self, conn: *mut Connection) {
+        self.conn = Some(conn);
     }
 
     pub fn complete(&self, line: &str, pos: usize) -> Result<(usize, Vec<Pair>), ReadlineError> {
@@ -145,19 +155,53 @@ impl CommandCompleter {
     }
 
     fn complete_key_names(&self, prefix: &str) -> Vec<Pair> {
-        // This is a placeholder for key name completion
-        // In a real implementation, we would use SCAN to get matching keys
         let mut candidates = Vec::new();
 
-        // For demonstration purposes, we'll just return some dummy keys
-        let dummy_keys = vec!["key1", "key2", "user:1000", "user:1001", "product:100", "product:101"];
+        // Check if we have a connection to the Redis server
+        if let Some(conn_ptr) = self.conn {
+            // SAFETY: We know the pointer is valid because we set it ourselves
+            let conn = unsafe { &mut *conn_ptr };
 
-        for key in dummy_keys {
-            if key.starts_with(prefix) {
-                candidates.push(Pair {
-                    display: key.to_string(),
-                    replacement: key.to_string(),
-                });
+            // Use SCAN to get keys matching the prefix
+            let pattern = format!("{}*", prefix);
+            let mut cursor = 0;
+
+            loop {
+                let (new_cursor, keys): (u64, Vec<String>) = match redis::cmd("SCAN")
+                    .arg(cursor)
+                    .arg("MATCH")
+                    .arg(pattern.as_str())
+                    .arg("COUNT")
+                    .arg(100)
+                    .query(conn)
+                {
+                    Ok(result) => result,
+                    Err(_) => break, // If there's an error, just return what we have
+                };
+
+                for key in keys {
+                    candidates.push(Pair {
+                        display: key.clone(),
+                        replacement: key,
+                    });
+                }
+
+                cursor = new_cursor;
+                if cursor == 0 {
+                    break;
+                }
+            }
+        } else {
+            // For demonstration purposes, return some dummy keys when no connection is available
+            let dummy_keys = vec!["key1", "key2", "user:1000", "user:1001", "product:100", "product:101"];
+
+            for key in dummy_keys {
+                if key.starts_with(prefix) {
+                    candidates.push(Pair {
+                        display: key.to_string(),
+                        replacement: key.to_string(),
+                    });
+                }
             }
         }
 

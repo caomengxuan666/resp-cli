@@ -10,6 +10,7 @@ use rustyline::validate::Validator;
 use rustyline::{Context, Helper};
 
 use crate::CommandCompleter;
+use redis::Connection;
 
 pub struct MyHelper {
     pub completer: CommandCompleter,
@@ -31,8 +32,31 @@ impl Completer for MyHelper {
 impl Helper for MyHelper {}
 impl Highlighter for MyHelper {
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> std::borrow::Cow<'l, str> {
-        // Simple highlighting for now
-        line.into()
+        // Basic syntax highlighting
+        let mut result = String::new();
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        
+        for (i, part) in parts.iter().enumerate() {
+            if i == 0 {
+                // Highlight command in green
+                result.push_str(&part.green().to_string());
+            } else if part.starts_with('"') && part.ends_with('"') {
+                // Highlight quoted strings in blue
+                result.push_str(&format!(" {}", part.blue()));
+            } else if part.starts_with("#") {
+                // Highlight comments in gray
+                result.push_str(&format!(" {}", part.dimmed()));
+                break; // Ignore rest of line after comment
+            } else if *part == "EX" || *part == "PX" || *part == "NX" || *part == "XX" || *part == "GET" {
+                // Highlight common options in yellow
+                result.push_str(&format!(" {}", part.yellow()));
+            } else {
+                // Regular arguments
+                result.push_str(&format!(" {}", part));
+            }
+        }
+        
+        result.into()
     }
 
     fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
@@ -52,6 +76,12 @@ impl Hinter for MyHelper {
 }
 impl Validator for MyHelper {}
 
+impl MyHelper {
+    pub fn set_connection(&mut self, conn: *mut Connection) {
+        self.completer.set_connection(conn);
+    }
+}
+
 /// Print welcome message
 pub fn print_welcome() {
     println!(
@@ -67,14 +97,14 @@ Welcome to resp-cli!"
 /// Get prompt based on connection info and state
 pub fn get_prompt(connection_info: &str, db_info: &str, in_transaction: bool, in_pipeline: bool, in_subscription: bool, in_monitor: bool) -> String {
     if in_transaction {
-        format!("resp(multi)[{}{}]> ", connection_info, db_info)
+        format!("resp(multi)[{}{}]> ", connection_info, db_info).purple().to_string()
     } else if in_pipeline {
-        format!("resp(pipeline)[{}{}]> ", connection_info, db_info)
+        format!("resp(pipeline)[{}{}]> ", connection_info, db_info).blue().to_string()
     } else if in_subscription {
-        format!("resp(sub)[{}{}]> ", connection_info, db_info)
+        format!("resp(sub)[{}{}]> ", connection_info, db_info).green().to_string()
     } else if in_monitor {
-        format!("resp(monitor)[{}{}]> ", connection_info, db_info)
+        format!("resp(monitor)[{}{}]> ", connection_info, db_info).yellow().to_string()
     } else {
-        format!("resp[{}{}]> ", connection_info, db_info)
+        format!("resp[{}{}]> ", connection_info, db_info).green().to_string()
     }
 }
