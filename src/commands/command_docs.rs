@@ -38,9 +38,9 @@ impl CommandDocs {
         // Try COMMAND DOCS first
         match redis::cmd("COMMAND").arg("DOCS").query(conn) {
             Ok(cmd_docs) => {
-                if let redis::Value::Bulk(values) = &cmd_docs {
+                if let redis::Value::Array(values) = &cmd_docs {
                     for value in values {
-                        if let redis::Value::Data(data) = value {
+                        if let redis::Value::BulkString(data) = value {
                             if let Ok(cmd_info) = serde_json::from_slice(data) {
                                 let cmd_info: CommandInfo = cmd_info;
                                 commands.insert(cmd_info.name.to_uppercase(), cmd_info);
@@ -53,10 +53,10 @@ impl CommandDocs {
                 // COMMAND DOCS failed, fall back to COMMAND
                 let cmd_list: redis::Value = redis::cmd("COMMAND").query(conn)?;
 
-                if let redis::Value::Bulk(values) = &cmd_list {
+                if let redis::Value::Array(values) = &cmd_list {
                     for value in values {
-                        if let redis::Value::Bulk(cmd_parts) = value {
-                            if let Some(redis::Value::Data(cmd_name)) = cmd_parts.get(0) {
+                        if let redis::Value::Array(cmd_parts) = value {
+                            if let Some(redis::Value::BulkString(cmd_name)) = cmd_parts.get(0) {
                                 if let Ok(cmd_name_str) = String::from_utf8(cmd_name.to_vec()) {
                                     commands.insert(
                                         cmd_name_str.to_uppercase(),
@@ -83,10 +83,10 @@ impl CommandDocs {
         if commands.is_empty() {
             let cmd_list: redis::Value = redis::cmd("COMMAND").query(conn)?;
 
-            if let redis::Value::Bulk(values) = &cmd_list {
+            if let redis::Value::Array(values) = &cmd_list {
                 for value in values {
-                    if let redis::Value::Bulk(cmd_parts) = value {
-                        if let Some(redis::Value::Data(cmd_name)) = cmd_parts.get(0) {
+                    if let redis::Value::Array(cmd_parts) = value {
+                        if let Some(redis::Value::BulkString(cmd_name)) = cmd_parts.get(0) {
                             if let Ok(cmd_name_str) = String::from_utf8(cmd_name.to_vec()) {
                                 commands.insert(
                                     cmd_name_str.to_uppercase(),

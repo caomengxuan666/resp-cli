@@ -3,12 +3,13 @@ use redis::Value;
 
 pub fn format_value(value: &Value) -> String {
     match value {
-        Value::Bulk(values) => format_bulk(values),
-        Value::Data(data) => format_data(data),
+        Value::Array(values) => format_bulk(values),
+        Value::BulkString(data) => format_data(data),
         Value::Int(i) => format_int(*i),
         Value::Nil => format_nil(),
-        Value::Status(s) => format_status(s),
+        Value::SimpleString(s) => format_status(s),
         Value::Okay => "OK".green().bold().to_string(),
+        _ => format!("{:?}", value).yellow().to_string(),
     }
 }
 
