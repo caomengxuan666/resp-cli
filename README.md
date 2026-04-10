@@ -37,7 +37,7 @@ cargo install resp-cli
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/resp-cli.git
+git clone https://github.com/caomengxuan666/resp-cli.git
 cd resp-cli
 
 # Build the project
