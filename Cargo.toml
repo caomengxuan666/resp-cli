@@ -2,6 +2,10 @@
 name = "resp-cli"
 version = "1.1.0"
 edition = "2024"
+description = "A Redis-compatible command-line client written in Rust, supporting Redis, Dragonfly, and KeyDB"
+license = "MIT"
+repository = "https://github.com/caomengxuan666/resp-cli"
+readme = "README.md"
 
 [dependencies]
 rustyline = "10.1.0"
