@@ -23,6 +23,7 @@ A Redis-compatible command-line client written in Rust, supporting Redis, Dragon
 - **Repeat command** functionality
 - **Read from stdin** support
 - **TLS encryption** support
+- **Redis Cluster** support
 
 ## Installation
 
