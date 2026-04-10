@@ -1,4 +1,4 @@
-use redis::RedisResult;
+use redis::{RedisResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -32,7 +32,7 @@ pub struct CommandDocs {
 }
 
 impl CommandDocs {
-    pub fn fetch(conn: &mut redis::Connection) -> RedisResult<Self> {
+    pub fn fetch<C: redis::ConnectionLike>(conn: &mut C) -> RedisResult<Self> {
         let mut commands = HashMap::new();
 
         // Try COMMAND DOCS first

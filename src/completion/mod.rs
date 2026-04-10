@@ -4,10 +4,60 @@ use rustyline::error::ReadlineError;
 use crate::commands::command_docs::CommandDocs;
 
 use redis::Connection;
+use redis::cluster::ClusterConnection;
+
+// Enum to handle both regular and cluster connections
+pub enum RedisConnection {
+    Regular(Connection),
+    Cluster(ClusterConnection),
+}
+
+// Implement ConnectionLike trait for RedisConnection
+impl redis::ConnectionLike for RedisConnection {
+    fn req_packed_command(&mut self, cmd: &[u8]) -> redis::RedisResult<redis::Value> {
+        match self {
+            RedisConnection::Regular(conn) => conn.req_packed_command(cmd),
+            RedisConnection::Cluster(conn) => conn.req_packed_command(cmd),
+        }
+    }
+
+    fn req_packed_commands(
+        &mut self,
+        cmd: &[u8],
+        offset: usize,
+        count: usize,
+    ) -> redis::RedisResult<Vec<redis::Value>> {
+        match self {
+            RedisConnection::Regular(conn) => conn.req_packed_commands(cmd, offset, count),
+            RedisConnection::Cluster(conn) => conn.req_packed_commands(cmd, offset, count),
+        }
+    }
+
+    fn get_db(&self) -> i64 {
+        match self {
+            RedisConnection::Regular(conn) => conn.get_db(),
+            RedisConnection::Cluster(conn) => conn.get_db(),
+        }
+    }
+
+    fn check_connection(&mut self) -> bool {
+        match self {
+            RedisConnection::Regular(conn) => conn.check_connection(),
+            RedisConnection::Cluster(conn) => conn.check_connection(),
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        match self {
+            RedisConnection::Regular(conn) => conn.is_open(),
+            RedisConnection::Cluster(conn) => conn.is_open(),
+        }
+    }
+}
 
 pub struct CommandCompleter {
     command_docs: CommandDocs,
-    conn: Option<*mut Connection>,
+    conn: Option<*mut RedisConnection>,
 }
 
 impl CommandCompleter {
@@ -18,7 +68,7 @@ impl CommandCompleter {
         }
     }
 
-    pub fn set_connection(&mut self, conn: *mut Connection) {
+    pub fn set_connection(&mut self, conn: *mut RedisConnection) {
         self.conn = Some(conn);
     }
 
@@ -167,28 +217,42 @@ impl CommandCompleter {
             let mut cursor = 0;
 
             loop {
-                let (new_cursor, keys): (u64, Vec<String>) = match redis::cmd("SCAN")
-                    .arg(cursor)
-                    .arg("MATCH")
-                    .arg(pattern.as_str())
-                    .arg("COUNT")
-                    .arg(100)
-                    .query(conn)
-                {
-                    Ok(result) => result,
-                    Err(_) => break, // If there's an error, just return what we have
+                let result = match conn {
+                    RedisConnection::Regular(conn) => {
+                        redis::cmd("SCAN")
+                            .arg(cursor)
+                            .arg("MATCH")
+                            .arg(pattern.as_str())
+                            .arg("COUNT")
+                            .arg(100)
+                            .query::<(u64, Vec<String>)>(conn)
+                    }
+                    RedisConnection::Cluster(conn) => {
+                        redis::cmd("SCAN")
+                            .arg(cursor)
+                            .arg("MATCH")
+                            .arg(pattern.as_str())
+                            .arg("COUNT")
+                            .arg(100)
+                            .query::<(u64, Vec<String>)>(conn)
+                    }
                 };
 
-                for key in keys {
-                    candidates.push(Pair {
-                        display: key.clone(),
-                        replacement: key,
-                    });
-                }
+                match result {
+                    Ok((new_cursor, keys)) => {
+                        for key in keys {
+                            candidates.push(Pair {
+                                display: key.clone(),
+                                replacement: key,
+                            });
+                        }
 
-                cursor = new_cursor;
-                if cursor == 0 {
-                    break;
+                        cursor = new_cursor;
+                        if cursor == 0 {
+                            break;
+                        }
+                    }
+                    Err(_) => break, // If there's an error, just return what we have
                 }
             }
         } else {

@@ -10,7 +10,7 @@ use rustyline::validate::Validator;
 use rustyline::{Context, Helper};
 
 use crate::CommandCompleter;
-use redis::Connection;
+use crate::completion::RedisConnection;
 
 pub struct MyHelper {
     pub completer: CommandCompleter,
@@ -77,7 +77,7 @@ impl Hinter for MyHelper {
 impl Validator for MyHelper {}
 
 impl MyHelper {
-    pub fn set_connection(&mut self, conn: *mut Connection) {
+    pub fn set_connection(&mut self, conn: *mut RedisConnection) {
         self.completer.set_connection(conn);
     }
 }

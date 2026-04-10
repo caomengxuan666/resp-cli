@@ -51,6 +51,12 @@ pub struct Args {
     #[arg(long)]
     pub client_name: Option<String>, // Client name
 
+    #[arg(long)]
+    pub cluster: bool, // Enable cluster mode
+
+    #[arg(long, action = clap::ArgAction::Append)]
+    pub cluster_nodes: Vec<String>, // Cluster nodes (host:port)
+
     #[arg(trailing_var_arg = true)]
     pub command: Vec<String>, // Command and arguments
 }
@@ -83,6 +89,10 @@ pub struct Config {
     pub history_size: usize,
     pub completion_enabled: bool,
     pub key_completion_enabled: bool,
+    
+    // Cluster settings
+    pub cluster: bool,
+    pub cluster_nodes: Vec<String>,
 }
 
 /// Read .respclirc file from home directory
@@ -99,6 +109,8 @@ pub fn read_respclirc() -> Config {
     config.history_size = 1000;
     config.completion_enabled = true;
     config.key_completion_enabled = true;
+    config.cluster = false;
+    config.cluster_nodes = Vec::new();
     
     // Get home directory
     if let Some(home) = std::env::var_os("HOME") {
@@ -130,6 +142,8 @@ pub fn read_respclirc() -> Config {
                                 "history-size" => config.history_size = value.parse().unwrap_or(1000),
                                 "completion-enabled" => config.completion_enabled = value.parse().unwrap_or(true),
                                 "key-completion-enabled" => config.key_completion_enabled = value.parse().unwrap_or(true),
+                                "cluster" => config.cluster = value.parse().unwrap_or(false),
+                                "cluster-nodes" => config.cluster_nodes.push(value.to_string()),
                                 _ => {} // Ignore unknown keys
                             }
                         }

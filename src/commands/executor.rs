@@ -4,7 +4,8 @@
 
 use clap::Parser;
 use colored::Colorize;
-use redis::{Connection, Value};
+use redis::Value;
+use crate::completion::RedisConnection;
 
 use crate::format_value;
 use crate::config::Args;
@@ -99,7 +100,7 @@ fn handle_error(e: &redis::RedisError, command: &str) {
 
 /// Process a command
 pub fn process_command(
-    conn: &mut Connection,
+    conn: &mut RedisConnection,
     parts: &[&str],
     in_transaction: &mut bool,
     transaction_commands: &mut Vec<(String, Vec<String>)>,
