@@ -26,6 +26,12 @@ A Redis-compatible command-line client written in Rust, supporting Redis, Dragon
 
 ## Installation
 
+### From crates.io
+
+```bash
+cargo install resp-cli
+```
+
 ### From Source
 
 ```bash
@@ -42,7 +48,7 @@ cargo build --release
 
 ### From Pre-built Binaries
 
-Pre-built binaries are available for Linux and Windows in the [releases](https://github.com/yourusername/resp-cli/releases) section.
+Pre-built binaries are available for Linux and Windows in the [releases](https://github.com/caomengxuan666/resp-cli/releases) section.
 
 ## Usage
 
