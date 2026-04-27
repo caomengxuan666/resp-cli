@@ -1,5 +1,5 @@
 //! Config module
-//! 
+//!
 //! Handles configuration parsing and loading.
 
 use clap::Parser;
@@ -74,7 +74,7 @@ pub struct Config {
     pub tls_client_cert: Option<String>,
     pub tls_client_key: Option<String>,
     pub db: i64,
-    
+
     // Command execution settings
     pub repeat: Option<u64>,
     pub interval: f64,
@@ -82,14 +82,14 @@ pub struct Config {
     pub from_stdin: bool,
     pub scan: bool,
     pub client_name: Option<String>,
-    
+
     // UI settings
     pub syntax_highlighting: bool,
     pub color_theme: String,
     pub history_size: usize,
     pub completion_enabled: bool,
     pub key_completion_enabled: bool,
-    
+
     // Cluster settings
     pub cluster: bool,
     pub cluster_nodes: Vec<String>,
@@ -98,7 +98,7 @@ pub struct Config {
 /// Read .respclirc file from home directory
 pub fn read_respclirc() -> Config {
     let mut config = Config::default();
-    
+
     // Set default values
     config.host = "localhost".to_string();
     config.port = "6379".to_string();
@@ -111,7 +111,7 @@ pub fn read_respclirc() -> Config {
     config.key_completion_enabled = true;
     config.cluster = false;
     config.cluster_nodes = Vec::new();
-    
+
     // Get home directory
     if let Some(home) = std::env::var_os("HOME") {
         let config_path = std::path::Path::new(&home).join(".respclirc");
@@ -128,7 +128,9 @@ pub fn read_respclirc() -> Config {
                                 "unix" => config.unix = Some(value.to_string()),
                                 "tls" => config.tls = value.parse().unwrap_or(false),
                                 "tls-ca-cert" => config.tls_ca_cert = Some(value.to_string()),
-                                "tls-client-cert" => config.tls_client_cert = Some(value.to_string()),
+                                "tls-client-cert" => {
+                                    config.tls_client_cert = Some(value.to_string())
+                                }
                                 "tls-client-key" => config.tls_client_key = Some(value.to_string()),
                                 "db" => config.db = value.parse().unwrap_or(0),
                                 "repeat" => config.repeat = value.parse().ok(),
@@ -137,11 +139,19 @@ pub fn read_respclirc() -> Config {
                                 "from-stdin" => config.from_stdin = value.parse().unwrap_or(false),
                                 "scan" => config.scan = value.parse().unwrap_or(false),
                                 "client-name" => config.client_name = Some(value.to_string()),
-                                "syntax-highlighting" => config.syntax_highlighting = value.parse().unwrap_or(true),
+                                "syntax-highlighting" => {
+                                    config.syntax_highlighting = value.parse().unwrap_or(true)
+                                }
                                 "color-theme" => config.color_theme = value.to_string(),
-                                "history-size" => config.history_size = value.parse().unwrap_or(1000),
-                                "completion-enabled" => config.completion_enabled = value.parse().unwrap_or(true),
-                                "key-completion-enabled" => config.key_completion_enabled = value.parse().unwrap_or(true),
+                                "history-size" => {
+                                    config.history_size = value.parse().unwrap_or(1000)
+                                }
+                                "completion-enabled" => {
+                                    config.completion_enabled = value.parse().unwrap_or(true)
+                                }
+                                "key-completion-enabled" => {
+                                    config.key_completion_enabled = value.parse().unwrap_or(true)
+                                }
                                 "cluster" => config.cluster = value.parse().unwrap_or(false),
                                 "cluster-nodes" => config.cluster_nodes.push(value.to_string()),
                                 _ => {} // Ignore unknown keys
@@ -152,6 +162,6 @@ pub fn read_respclirc() -> Config {
             }
         }
     }
-    
+
     config
 }

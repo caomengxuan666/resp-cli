@@ -1,14 +1,13 @@
 //! Command executor module
-//! 
+//!
 //! Handles command execution and processing.
 
-use clap::Parser;
+use crate::ConnParams;
+use crate::completion::RedisConnection;
 use colored::Colorize;
 use redis::Value;
-use crate::completion::RedisConnection;
 
 use crate::format_value;
-use crate::config::Args;
 
 /// Print value in raw mode (no color, no formatting)
 pub fn print_raw_value(value: &Value) {
@@ -43,52 +42,32 @@ fn handle_error(e: &redis::RedisError, command: &str) {
     } else if error_msg.contains("ERR wrong number of arguments") {
         println!(
             "{}",
-            format!(
-                "Error: Wrong number of arguments for command '{}'",
-                command
-            )
-            .red()
+            format!("Error: Wrong number of arguments for command '{}'", command).red()
         );
         println!(
             "{}",
             "Please check the command syntax and try again".yellow()
         );
     } else if error_msg.contains("ERR unknown command") {
-        println!(
-            "{}",
-            format!("Error: Unknown command '{}'", command).red()
-        );
+        println!("{}", format!("Error: Unknown command '{}'", command).red());
         println!("{}", "Please check the command name and try again".yellow());
     } else if error_msg.contains("CONNECTION REFUSED") {
         println!("{}", "Error: Connection refused".red());
         println!(
             "{}",
-            "Please check if the Redis server is running and accessible"
-                .yellow()
+            "Please check if the Redis server is running and accessible".yellow()
         );
     } else if error_msg.contains("ERR no such key") {
-        println!(
-            "{}",
-            "Error: Key does not exist".red()
-        );
-        println!(
-            "{}",
-            "Please check the key name and try again".yellow()
-        );
+        println!("{}", "Error: Key does not exist".red());
+        println!("{}", "Please check the key name and try again".yellow());
     } else if error_msg.contains("ERR WRONGPASS") {
-        println!(
-            "{}",
-            "Error: Wrong password".red()
-        );
+        println!("{}", "Error: Wrong password".red());
         println!(
             "{}",
             "Please provide the correct password using -a option".yellow()
         );
     } else if error_msg.contains("ERR DB index is out of range") {
-        println!(
-            "{}",
-            "Error: Database index is out of range".red()
-        );
+        println!("{}", "Error: Database index is out of range".red());
         println!(
             "{}",
             "Please use a database index between 0 and 15".yellow()
@@ -111,6 +90,7 @@ pub fn process_command(
     aliases: &mut std::collections::HashMap<String, String>,
     timeout: &mut Option<u64>,
     current_db: &mut i64,
+    conn_params: &ConnParams,
 ) {
     // Check if it's a client-side command
     if parts[0].eq_ignore_ascii_case("clear") {
@@ -140,7 +120,12 @@ pub fn process_command(
             // Export aliases to file
             let file_path = parts[2];
             match std::fs::write(file_path, serde_json::to_string_pretty(aliases).unwrap()) {
-                Ok(_) => println!("{}", format!("Aliases exported to '{}'", file_path).green().bold()),
+                Ok(_) => println!(
+                    "{}",
+                    format!("Aliases exported to '{}'", file_path)
+                        .green()
+                        .bold()
+                ),
                 Err(e) => println!("{}", format!("Error exporting aliases: {}", e).red()),
             }
         } else if parts.len() == 3 && parts[1] == "IMPORT" {
@@ -148,10 +133,17 @@ pub fn process_command(
             let file_path = parts[2];
             match std::fs::read_to_string(file_path) {
                 Ok(content) => {
-                    match serde_json::from_str::<std::collections::HashMap<String, String>>(&content) {
+                    match serde_json::from_str::<std::collections::HashMap<String, String>>(
+                        &content,
+                    ) {
                         Ok(imported_aliases) => {
                             aliases.extend(imported_aliases);
-                            println!("{}", format!("Aliases imported from '{}'", file_path).green().bold());
+                            println!(
+                                "{}",
+                                format!("Aliases imported from '{}'", file_path)
+                                    .green()
+                                    .bold()
+                            );
                         }
                         Err(e) => println!("{}", format!("Error parsing alias file: {}", e).red()),
                     }
@@ -163,13 +155,19 @@ pub fn process_command(
             let alias = parts[1].to_lowercase();
             let cmd = parts[2];
             aliases.insert(alias.clone(), cmd.to_string());
-            println!("{}", format!("Alias '{}' set to '{}'", alias, cmd).green().bold());
+            println!(
+                "{}",
+                format!("Alias '{}' set to '{}'", alias, cmd).green().bold()
+            );
         } else if parts.len() > 3 {
             // Set an alias with arguments
             let alias = parts[1].to_lowercase();
             let cmd = parts[2..].join(" ");
             aliases.insert(alias.clone(), cmd.clone());
-            println!("{}", format!("Alias '{}' set to '{}'", alias, cmd).green().bold());
+            println!(
+                "{}",
+                format!("Alias '{}' set to '{}'", alias, cmd).green().bold()
+            );
         } else {
             println!("{}", "Usage: ALIAS [alias] [command] or ALIAS CLEAR or ALIAS EXPORT <file> or ALIAS IMPORT <file>".red());
         }
@@ -224,21 +222,19 @@ pub fn process_command(
                 // Execute the transaction
                 let result = redis::cmd("EXEC").query(conn);
                 match result {
-                    Ok(value) => {
-                        match value {
-                            Value::Array(values) => {
-                                for (i, value) in values.iter().enumerate() {
-                                    println!("{}> {}", i + 1, format_value(value));
-                                }
-                            }
-                            Value::Nil => {
-                                println!("{}", "(nil)".dimmed().italic());
-                            }
-                            _ => {
-                                println!("{}", format_value(&value));
+                    Ok(value) => match value {
+                        Value::Array(values) => {
+                            for (i, value) in values.iter().enumerate() {
+                                println!("{}> {}", i + 1, format_value(value));
                             }
                         }
-                    }
+                        Value::Nil => {
+                            println!("{}", "(nil)".dimmed().italic());
+                        }
+                        _ => {
+                            println!("{}", format_value(&value));
+                        }
+                    },
                     Err(e) => {
                         handle_error(&e, command_parts[0]);
                     }
@@ -258,18 +254,16 @@ pub fn process_command(
 
                 let result = pipe.query(conn);
                 match result {
-                    Ok(value) => {
-                        match value {
-                            Value::Array(values) => {
-                                for (i, value) in values.iter().enumerate() {
-                                    println!("{}> {}", i + 1, format_value(value));
-                                }
-                            }
-                            _ => {
-                                println!("{}", format_value(&value));
+                    Ok(value) => match value {
+                        Value::Array(values) => {
+                            for (i, value) in values.iter().enumerate() {
+                                println!("{}> {}", i + 1, format_value(value));
                             }
                         }
-                    }
+                        _ => {
+                            println!("{}", format_value(&value));
+                        }
+                    },
                     Err(e) => {
                         handle_error(&e, command_parts[0]);
                     }
@@ -339,16 +333,15 @@ pub fn process_command(
             *in_monitor = true;
 
             // Create a new connection for monitoring (to avoid blocking the main connection)
-            let args = Args::parse();
             let mut monitor_conn = match crate::connect(
-                &args.host,
-                &args.port,
-                args.password.as_deref(),
-                args.unix.as_deref(),
-                args.tls,
-                args.tls_ca_cert.as_deref(),
-                args.tls_client_cert.as_deref(),
-                args.tls_client_key.as_deref()
+                &conn_params.host,
+                &conn_params.port,
+                conn_params.password.as_deref(),
+                conn_params.unix.as_deref(),
+                conn_params.tls,
+                conn_params.tls_ca_cert.as_deref(),
+                conn_params.tls_client_cert.as_deref(),
+                conn_params.tls_client_key.as_deref(),
             ) {
                 Ok(conn) => conn,
                 Err(e) => {
@@ -364,7 +357,10 @@ pub fn process_command(
             match result {
                 Ok(_) => {
                     println!("{}", "OK".green().bold());
-                    println!("{}", "Entering monitor mode. Press Ctrl+C to exit.".yellow());
+                    println!(
+                        "{}",
+                        "Entering monitor mode. Press Ctrl+C to exit.".yellow()
+                    );
                 }
                 Err(e) => {
                     handle_error(&e, "MONITOR");
@@ -462,13 +458,13 @@ pub fn process_command(
                                         success_count += 1;
                                     }
                                     Err(e) => {
-                        println!(
-                            "{}",
-                            format!("Error at line {}:", line_num + 1).red()
-                        );
-                        handle_error(&e, parts[0]);
-                        error_count += 1;
-                    }
+                                        println!(
+                                            "{}",
+                                            format!("Error at line {}:", line_num + 1).red()
+                                        );
+                                        handle_error(&e, parts[0]);
+                                        error_count += 1;
+                                    }
                                 }
                             }
                         }
@@ -564,16 +560,15 @@ pub fn process_command(
             *in_subscription = true;
 
             // Create a new connection for subscription (to avoid blocking the main connection)
-            let args = Args::parse();
             let mut sub_conn = match crate::connect(
-                &args.host,
-                &args.port,
-                args.password.as_deref(),
-                args.unix.as_deref(),
-                args.tls,
-                args.tls_ca_cert.as_deref(),
-                args.tls_client_cert.as_deref(),
-                args.tls_client_key.as_deref(),
+                &conn_params.host,
+                &conn_params.port,
+                conn_params.password.as_deref(),
+                conn_params.unix.as_deref(),
+                conn_params.tls,
+                conn_params.tls_ca_cert.as_deref(),
+                conn_params.tls_client_cert.as_deref(),
+                conn_params.tls_client_key.as_deref(),
             ) {
                 Ok(conn) => conn,
                 Err(e) => {

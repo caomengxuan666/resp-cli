@@ -1,28 +1,31 @@
 //! resp-cli main
-//! 
+//!
 //! Main entry point for the resp-cli Redis client.
 
 use clap::Parser;
 use colored::Colorize;
-use std::io::Read;
-use rustyline::error::ReadlineError;
-use rustyline::{Config, Editor};
 use dirs::home_dir;
-use std::path::PathBuf;
 use resp_cli::completion::RedisConnection;
 use resp_cli::connect_cluster;
+use rustyline::error::ReadlineError;
+use rustyline::{Config, Editor};
+use std::cell::RefCell;
+use std::io::Read;
+use std::path::PathBuf;
+use std::rc::Rc;
 
 use resp_cli::Args;
-use resp_cli::CommandDocs;
 use resp_cli::CommandCompleter;
+use resp_cli::CommandDocs;
+use resp_cli::ConnParams;
 use resp_cli::MyHelper;
 use resp_cli::connect;
 use resp_cli::format_value;
+use resp_cli::get_prompt;
 use resp_cli::print_raw_value;
+use resp_cli::print_welcome;
 use resp_cli::process_command;
 use resp_cli::read_respclirc;
-use resp_cli::print_welcome;
-use resp_cli::get_prompt;
 
 /// Get the path to the history file
 fn get_history_path() -> PathBuf {
@@ -36,7 +39,7 @@ fn get_history_path() -> PathBuf {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Read config from .respclirc
     let mut config = read_respclirc();
-    
+
     // Parse command line arguments
     let args = Args::parse();
 
@@ -109,6 +112,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.cluster_nodes = args.cluster_nodes;
     };
 
+    // Build connection params for later use (e.g. MONITOR/SUBSCRIBE)
+    let conn_params = ConnParams::from_config(&config);
+
     // Extract connection parameters
     let host = config.host.as_str();
     let port = config.port.as_str();
@@ -119,23 +125,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tls_client_cert = config.tls_client_cert.as_deref();
     let tls_client_key = config.tls_client_key.as_deref();
 
-
-
-    let mut conn: RedisConnection = if config.cluster {
+    let conn = if config.cluster {
         if config.cluster_nodes.is_empty() {
-            // If no cluster nodes specified, use the main host:port as the entry point
             let cluster_nodes = vec![format!("{}:{}", host, port)];
             let cluster_nodes_ref: Vec<&str> = cluster_nodes.iter().map(|s| s.as_str()).collect();
             let cluster_conn = connect_cluster(&cluster_nodes_ref, password)?;
-            RedisConnection::Cluster(cluster_conn)
+            Rc::new(RefCell::new(RedisConnection::Cluster(cluster_conn)))
         } else {
-            // Use the specified cluster nodes
-            let cluster_nodes_ref: Vec<&str> = config.cluster_nodes.iter().map(|s| s.as_str()).collect();
+            let cluster_nodes_ref: Vec<&str> =
+                config.cluster_nodes.iter().map(|s| s.as_str()).collect();
             let cluster_conn = connect_cluster(&cluster_nodes_ref, password)?;
-            RedisConnection::Cluster(cluster_conn)
+            Rc::new(RefCell::new(RedisConnection::Cluster(cluster_conn)))
         }
     } else {
-        // Regular connection
         let regular_conn = connect(
             host,
             port,
@@ -146,37 +148,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tls_client_cert,
             tls_client_key,
         )?;
-        RedisConnection::Regular(regular_conn)
+        Rc::new(RefCell::new(RedisConnection::Regular(regular_conn)))
     };
 
     // Select database if not default (0)
     if config.db != 0 {
-        match &mut conn {
+        match &mut *conn.borrow_mut() {
             RedisConnection::Regular(conn) => {
-                let result: redis::RedisResult<()> = redis::cmd("SELECT").arg(config.db).query(conn);
+                let result: redis::RedisResult<()> =
+                    redis::cmd("SELECT").arg(config.db).query(conn);
                 if let Err(e) = result {
-                    println!("{}", format!("Warning: Failed to select database {}: {}", config.db, e).yellow());
+                    println!(
+                        "{}",
+                        format!("Warning: Failed to select database {}: {}", config.db, e).yellow()
+                    );
                 }
             }
             RedisConnection::Cluster(_) => {
-                println!("{}", "Warning: SELECT command is not supported in cluster mode".yellow());
+                println!(
+                    "{}",
+                    "Warning: SELECT command is not supported in cluster mode".yellow()
+                );
             }
         }
     }
 
     // Set client name if specified
     if let Some(client_name) = &config.client_name {
-        match &mut conn {
+        match &mut *conn.borrow_mut() {
             RedisConnection::Regular(conn) => {
-                let result: redis::RedisResult<()> = redis::cmd("CLIENT").arg("SETNAME").arg(client_name).query(conn);
+                let result: redis::RedisResult<()> = redis::cmd("CLIENT")
+                    .arg("SETNAME")
+                    .arg(client_name)
+                    .query(conn);
                 if let Err(e) = result {
-                    println!("{}", format!("Warning: Failed to set client name: {}", e).yellow());
+                    println!(
+                        "{}",
+                        format!("Warning: Failed to set client name: {}", e).yellow()
+                    );
                 }
             }
             RedisConnection::Cluster(conn) => {
-                let result: redis::RedisResult<()> = redis::cmd("CLIENT").arg("SETNAME").arg(client_name).query(conn);
+                let result: redis::RedisResult<()> = redis::cmd("CLIENT")
+                    .arg("SETNAME")
+                    .arg(client_name)
+                    .query(conn);
                 if let Err(e) = result {
-                    println!("{}", format!("Warning: Failed to set client name: {}", e).yellow());
+                    println!(
+                        "{}",
+                        format!("Warning: Failed to set client name: {}", e).yellow()
+                    );
                 }
             }
         }
@@ -195,25 +216,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         loop {
-            let result = match &mut conn {
-                RedisConnection::Regular(conn) => {
-                    redis::cmd("SCAN")
-                        .arg(cursor)
-                        .arg("MATCH")
-                        .arg(pattern.clone())
-                        .arg("COUNT")
-                        .arg(100)
-                        .query::<(u64, Vec<String>)>(conn)
-                }
-                RedisConnection::Cluster(conn) => {
-                    redis::cmd("SCAN")
-                        .arg(cursor)
-                        .arg("MATCH")
-                        .arg(pattern.clone())
-                        .arg("COUNT")
-                        .arg(100)
-                        .query::<(u64, Vec<String>)>(conn)
-                }
+            let result = match &mut *conn.borrow_mut() {
+                RedisConnection::Regular(conn) => redis::cmd("SCAN")
+                    .arg(cursor)
+                    .arg("MATCH")
+                    .arg(pattern.clone())
+                    .arg("COUNT")
+                    .arg(100)
+                    .query::<(u64, Vec<String>)>(conn),
+                RedisConnection::Cluster(conn) => redis::cmd("SCAN")
+                    .arg(cursor)
+                    .arg("MATCH")
+                    .arg(pattern.clone())
+                    .arg("COUNT")
+                    .arg(100)
+                    .query::<(u64, Vec<String>)>(conn),
             };
 
             match result {
@@ -257,17 +274,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Execute the command
         let repeat_count = config.repeat.unwrap_or(1);
         for i in 0..repeat_count {
-            let result = match &mut conn {
-                RedisConnection::Regular(conn) => {
-                    redis::cmd(&final_command_parts[0])
-                        .arg(&final_command_parts[1..])
-                        .query(conn)
-                }
-                RedisConnection::Cluster(conn) => {
-                    redis::cmd(&final_command_parts[0])
-                        .arg(&final_command_parts[1..])
-                        .query(conn)
-                }
+            let result = match &mut *conn.borrow_mut() {
+                RedisConnection::Regular(conn) => redis::cmd(&final_command_parts[0])
+                    .arg(&final_command_parts[1..])
+                    .query(conn),
+                RedisConnection::Cluster(conn) => redis::cmd(&final_command_parts[0])
+                    .arg(&final_command_parts[1..])
+                    .query(conn),
             };
 
             match result {
@@ -294,13 +307,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Fetch command documentation silently
-    let command_docs = match &mut conn {
-        RedisConnection::Regular(conn) => {
-            CommandDocs::fetch(conn)?
-        }
-        RedisConnection::Cluster(conn) => {
-            CommandDocs::fetch(conn)?
-        }
+    let command_docs = match &mut *conn.borrow_mut() {
+        RedisConnection::Regular(conn) => CommandDocs::fetch(conn)?,
+        RedisConnection::Cluster(conn) => CommandDocs::fetch(conn)?,
     };
 
     let completer = CommandCompleter::new(command_docs);
@@ -312,14 +321,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut h = MyHelper { completer };
 
     // Set the connection for key completion
-    h.set_connection(&mut conn as *mut _);
+    h.set_connection(Rc::clone(&conn));
 
     let mut rl = Editor::with_config(rl_config)?;
     rl.set_helper(Some(h));
 
     // Load history from user's home directory
     let history_path = get_history_path();
-    let _ = rl.load_history(history_path.to_str().unwrap());
+    if let Some(path_str) = history_path.to_str() {
+        let _ = rl.load_history(path_str);
+    }
 
     // Transaction state
     let mut in_transaction = false;
@@ -373,7 +384,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             String::new()
         };
-        let prompt = get_prompt(&connection_info, &db_info, in_transaction, in_pipeline, in_subscription, in_monitor);
+        let prompt = get_prompt(
+            &connection_info,
+            &db_info,
+            in_transaction,
+            in_pipeline,
+            in_subscription,
+            in_monitor,
+        );
         let readline = rl.readline(&prompt);
         match readline {
             Ok(line) => {
@@ -387,7 +405,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if line_str == "exit" || line_str == "quit" {
                     // If in transaction, discard it first
                     if in_transaction {
-                        let _ = redis::cmd("DISCARD").query::<()>(&mut conn);
+                        let _ = redis::cmd("DISCARD").query::<()>(&mut *conn.borrow_mut());
                         println!("{}", "Transaction discarded".yellow());
                     }
                     // If in pipeline, clear it
@@ -440,7 +458,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let parts: Vec<&str> = multi_line.split_whitespace().collect();
                     if !parts.is_empty() {
                         process_command(
-                            &mut conn,
+                            &mut *conn.borrow_mut(),
                             &parts,
                             &mut in_transaction,
                             &mut transaction_commands,
@@ -451,6 +469,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             &mut aliases,
                             &mut timeout,
                             &mut current_db,
+                            &conn_params,
                         );
                     }
                 } else {
@@ -458,7 +477,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let parts: Vec<&str> = line_str.split_whitespace().collect();
                     if !parts.is_empty() {
                         process_command(
-                            &mut conn,
+                            &mut *conn.borrow_mut(),
                             &parts,
                             &mut in_transaction,
                             &mut transaction_commands,
@@ -469,6 +488,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             &mut aliases,
                             &mut timeout,
                             &mut current_db,
+                            &conn_params,
                         );
                     }
                 }
@@ -476,7 +496,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(ReadlineError::Interrupted) => {
                 // If in transaction, discard it
                 if in_transaction {
-                    let _ = redis::cmd("DISCARD").query::<()>(&mut conn);
+                    let _ = redis::cmd("DISCARD").query::<()>(&mut *conn.borrow_mut());
                     println!("{}", "Transaction discarded".yellow());
                     in_transaction = false;
                     transaction_commands.clear();
@@ -499,7 +519,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(ReadlineError::Eof) => {
                 // If in transaction, discard it
                 if in_transaction {
-                    let _ = redis::cmd("DISCARD").query::<()>(&mut conn);
+                    let _ = redis::cmd("DISCARD").query::<()>(&mut *conn.borrow_mut());
                     println!("{}", "Transaction discarded".yellow());
                 }
                 // If in pipeline, clear it
@@ -527,7 +547,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Save history
     let history_path = get_history_path();
-    let _ = rl.save_history(history_path.to_str().unwrap());
+    if let Some(path_str) = history_path.to_str() {
+        let _ = rl.save_history(path_str);
+    }
 
     println!("{}", "Goodbye!".cyan());
     Ok(())

@@ -1,5 +1,7 @@
 use rustyline::completion::Pair;
 use rustyline::error::ReadlineError;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::commands::command_docs::CommandDocs;
 
@@ -57,18 +59,18 @@ impl redis::ConnectionLike for RedisConnection {
 
 pub struct CommandCompleter {
     command_docs: CommandDocs,
-    conn: Option<*mut RedisConnection>,
+    conn: Option<Rc<RefCell<RedisConnection>>>,
 }
 
 impl CommandCompleter {
     pub fn new(command_docs: CommandDocs) -> Self {
-        Self { 
-            command_docs, 
-            conn: None 
+        Self {
+            command_docs,
+            conn: None,
         }
     }
 
-    pub fn set_connection(&mut self, conn: *mut RedisConnection) {
+    pub fn set_connection(&mut self, conn: Rc<RefCell<RedisConnection>>) {
         self.conn = Some(conn);
     }
 
@@ -208,65 +210,42 @@ impl CommandCompleter {
         let mut candidates = Vec::new();
 
         // Check if we have a connection to the Redis server
-        if let Some(conn_ptr) = self.conn {
-            // SAFETY: We know the pointer is valid because we set it ourselves
-            let conn = unsafe { &mut *conn_ptr };
+        if let Some(ref conn_rc) = self.conn {
+            if let Ok(mut conn) = conn_rc.try_borrow_mut() {
+                // Use SCAN to get keys matching the prefix
+                let pattern = format!("{}*", prefix);
+                let mut cursor = 0;
 
-            // Use SCAN to get keys matching the prefix
-            let pattern = format!("{}*", prefix);
-            let mut cursor = 0;
+                loop {
+                    let result = redis::cmd("SCAN")
+                        .arg(cursor)
+                        .arg("MATCH")
+                        .arg(pattern.as_str())
+                        .arg("COUNT")
+                        .arg(100)
+                        .query::<(u64, Vec<String>)>(&mut *conn);
 
-            loop {
-                let result = match conn {
-                    RedisConnection::Regular(conn) => {
-                        redis::cmd("SCAN")
-                            .arg(cursor)
-                            .arg("MATCH")
-                            .arg(pattern.as_str())
-                            .arg("COUNT")
-                            .arg(100)
-                            .query::<(u64, Vec<String>)>(conn)
-                    }
-                    RedisConnection::Cluster(conn) => {
-                        redis::cmd("SCAN")
-                            .arg(cursor)
-                            .arg("MATCH")
-                            .arg(pattern.as_str())
-                            .arg("COUNT")
-                            .arg(100)
-                            .query::<(u64, Vec<String>)>(conn)
-                    }
-                };
+                    match result {
+                        Ok((new_cursor, keys)) => {
+                            for key in keys {
+                                candidates.push(Pair {
+                                    display: key.clone(),
+                                    replacement: key,
+                                });
+                            }
 
-                match result {
-                    Ok((new_cursor, keys)) => {
-                        for key in keys {
-                            candidates.push(Pair {
-                                display: key.clone(),
-                                replacement: key,
-                            });
+                            cursor = new_cursor;
+                            if cursor == 0 {
+                                break;
+                            }
                         }
-
-                        cursor = new_cursor;
-                        if cursor == 0 {
-                            break;
-                        }
+                        Err(_) => break, // If there's an error, just return what we have
                     }
-                    Err(_) => break, // If there's an error, just return what we have
                 }
             }
         } else {
-            // For demonstration purposes, return some dummy keys when no connection is available
-            let dummy_keys = vec!["key1", "key2", "user:1000", "user:1001", "product:100", "product:101"];
-
-            for key in dummy_keys {
-                if key.starts_with(prefix) {
-                    candidates.push(Pair {
-                        display: key.to_string(),
-                        replacement: key.to_string(),
-                    });
-                }
-            }
+            // If no connection is available, return empty (no dummy keys)
+            candidates = vec![];
         }
 
         candidates
@@ -274,7 +253,10 @@ impl CommandCompleter {
 
     fn is_key_operation(&self, command: &str) -> bool {
         // Check if the command operates on keys
-        let key_commands = vec!["GET", "SET", "DEL", "EXISTS", "INCR", "DECR", "EXPIRE", "TTL", "LPUSH", "RPUSH", "LPOP", "RPOP", "HGET", "HSET", "HDEL", "HMGET", "HMSET"];
+        let key_commands = vec![
+            "GET", "SET", "DEL", "EXISTS", "INCR", "DECR", "EXPIRE", "TTL", "LPUSH", "RPUSH",
+            "LPOP", "RPOP", "HGET", "HSET", "HDEL", "HMGET", "HMSET",
+        ];
 
         key_commands.contains(&command.to_uppercase().as_str())
     }

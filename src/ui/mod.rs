@@ -1,5 +1,5 @@
 //! UI module
-//! 
+//!
 //! Handles user interface related functionality.
 
 use colored::Colorize;
@@ -8,6 +8,8 @@ use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
 use rustyline::{Context, Helper};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::CommandCompleter;
 use crate::completion::RedisConnection;
@@ -35,7 +37,7 @@ impl Highlighter for MyHelper {
         // Basic syntax highlighting
         let mut result = String::new();
         let parts: Vec<&str> = line.split_whitespace().collect();
-        
+
         for (i, part) in parts.iter().enumerate() {
             if i == 0 {
                 // Highlight command in green
@@ -47,7 +49,12 @@ impl Highlighter for MyHelper {
                 // Highlight comments in gray
                 result.push_str(&format!(" {}", part.dimmed()));
                 break; // Ignore rest of line after comment
-            } else if *part == "EX" || *part == "PX" || *part == "NX" || *part == "XX" || *part == "GET" {
+            } else if *part == "EX"
+                || *part == "PX"
+                || *part == "NX"
+                || *part == "XX"
+                || *part == "GET"
+            {
                 // Highlight common options in yellow
                 result.push_str(&format!(" {}", part.yellow()));
             } else {
@@ -55,7 +62,7 @@ impl Highlighter for MyHelper {
                 result.push_str(&format!(" {}", part));
             }
         }
-        
+
         result.into()
     }
 
@@ -77,7 +84,7 @@ impl Hinter for MyHelper {
 impl Validator for MyHelper {}
 
 impl MyHelper {
-    pub fn set_connection(&mut self, conn: *mut RedisConnection) {
+    pub fn set_connection(&mut self, conn: Rc<RefCell<RedisConnection>>) {
         self.completer.set_connection(conn);
     }
 }
@@ -95,16 +102,33 @@ Welcome to resp-cli!"
 }
 
 /// Get prompt based on connection info and state
-pub fn get_prompt(connection_info: &str, db_info: &str, in_transaction: bool, in_pipeline: bool, in_subscription: bool, in_monitor: bool) -> String {
+pub fn get_prompt(
+    connection_info: &str,
+    db_info: &str,
+    in_transaction: bool,
+    in_pipeline: bool,
+    in_subscription: bool,
+    in_monitor: bool,
+) -> String {
     if in_transaction {
-        format!("resp(multi)[{}{}]> ", connection_info, db_info).purple().to_string()
+        format!("resp(multi)[{}{}]> ", connection_info, db_info)
+            .purple()
+            .to_string()
     } else if in_pipeline {
-        format!("resp(pipeline)[{}{}]> ", connection_info, db_info).blue().to_string()
+        format!("resp(pipeline)[{}{}]> ", connection_info, db_info)
+            .blue()
+            .to_string()
     } else if in_subscription {
-        format!("resp(sub)[{}{}]> ", connection_info, db_info).green().to_string()
+        format!("resp(sub)[{}{}]> ", connection_info, db_info)
+            .green()
+            .to_string()
     } else if in_monitor {
-        format!("resp(monitor)[{}{}]> ", connection_info, db_info).yellow().to_string()
+        format!("resp(monitor)[{}{}]> ", connection_info, db_info)
+            .yellow()
+            .to_string()
     } else {
-        format!("resp[{}{}]> ", connection_info, db_info).green().to_string()
+        format!("resp[{}{}]> ", connection_info, db_info)
+            .green()
+            .to_string()
     }
 }

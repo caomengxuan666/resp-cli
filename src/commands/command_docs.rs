@@ -1,4 +1,4 @@
-use redis::{RedisResult};
+use redis::RedisResult;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -48,7 +48,7 @@ impl CommandDocs {
                         }
                     }
                 }
-            },
+            }
             Err(_) => {
                 // COMMAND DOCS failed, fall back to COMMAND
                 let cmd_list: redis::Value = redis::cmd("COMMAND").query(conn)?;
