@@ -36,6 +36,34 @@ fn get_history_path() -> PathBuf {
     }
 }
 
+/// Get the path to the aliases file
+fn get_aliases_path() -> PathBuf {
+    if let Some(home) = home_dir() {
+        home.join(".resp-cli-aliases")
+    } else {
+        PathBuf::from("resp-cli-aliases.json")
+    }
+}
+
+/// Load aliases from file, returning an empty map on any error
+fn load_aliases() -> std::collections::HashMap<String, String> {
+    let path = get_aliases_path();
+    match std::fs::read_to_string(&path) {
+        Ok(content) => {
+            serde_json::from_str(&content).unwrap_or_default()
+        }
+        Err(_) => std::collections::HashMap::new(),
+    }
+}
+
+/// Save aliases to file
+fn save_aliases(aliases: &std::collections::HashMap<String, String>) {
+    let path = get_aliases_path();
+    if let Ok(json) = serde_json::to_string_pretty(aliases) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Read config from .respclirc
     let mut config = read_respclirc();
@@ -312,13 +340,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         RedisConnection::Cluster(conn) => CommandDocs::fetch(conn)?,
     };
 
-    let completer = CommandCompleter::new(command_docs);
+    let mut completer = CommandCompleter::new(command_docs);
+    completer.set_key_completion_enabled(config.key_completion_enabled);
     let rl_config = Config::builder()
         .history_ignore_space(true)
         .auto_add_history(true)
+        .max_history_size(config.history_size)
         .build();
 
-    let mut h = MyHelper { completer };
+    let mut h = MyHelper {
+        completer,
+        syntax_highlighting: config.syntax_highlighting,
+        completion_enabled: config.completion_enabled,
+    };
 
     // Set the connection for key completion
     h.set_connection(Rc::clone(&conn));
@@ -346,27 +380,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Monitor state
     let mut in_monitor = false;
 
-    // Command aliases
-    let mut aliases: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    // Add some default aliases
-    aliases.insert("ls".to_string(), "KEYS *".to_string());
-    aliases.insert("ll".to_string(), "KEYS *".to_string());
-    aliases.insert("del".to_string(), "DEL".to_string());
-    aliases.insert("setex".to_string(), "SETEX".to_string());
-    aliases.insert("getset".to_string(), "GETSET".to_string());
-    aliases.insert("incr".to_string(), "INCR".to_string());
-    aliases.insert("decr".to_string(), "DECR".to_string());
-    aliases.insert("expire".to_string(), "EXPIRE".to_string());
-    aliases.insert("ttl".to_string(), "TTL".to_string());
-    aliases.insert("ping".to_string(), "PING".to_string());
-    aliases.insert("info".to_string(), "INFO".to_string());
-    aliases.insert("keys".to_string(), "KEYS".to_string());
-    aliases.insert("exists".to_string(), "EXISTS".to_string());
-    aliases.insert("type".to_string(), "TYPE".to_string());
-    aliases.insert("rename".to_string(), "RENAME".to_string());
-    aliases.insert("dbsize".to_string(), "DBSIZE".to_string());
-    aliases.insert("flushdb".to_string(), "FLUSHDB".to_string());
-    aliases.insert("flushall".to_string(), "FLUSHALL".to_string());
+    // Command aliases - load from file, then overlay defaults
+    let mut aliases: std::collections::HashMap<String, String> = load_aliases();
+    // Add default aliases (only if not already defined by user)
+    let default_aliases = [
+        ("ls", "KEYS *"),
+        ("ll", "KEYS *"),
+        ("del", "DEL"),
+        ("setex", "SETEX"),
+        ("getset", "GETSET"),
+        ("incr", "INCR"),
+        ("decr", "DECR"),
+        ("expire", "EXPIRE"),
+        ("ttl", "TTL"),
+        ("ping", "PING"),
+        ("info", "INFO"),
+        ("keys", "KEYS"),
+        ("exists", "EXISTS"),
+        ("type", "TYPE"),
+        ("rename", "RENAME"),
+        ("dbsize", "DBSIZE"),
+        ("flushdb", "FLUSHDB"),
+        ("flushall", "FLUSHALL"),
+    ];
+    for (alias, cmd) in default_aliases {
+        aliases.entry(alias.to_string()).or_insert_with(|| cmd.to_string());
+    }
+    let mut aliases_modified = false;
 
     // Command timeout (in milliseconds)
     let mut timeout: Option<u64> = None;
@@ -467,6 +507,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             &mut in_subscription,
                             &mut in_monitor,
                             &mut aliases,
+                            &mut aliases_modified,
                             &mut timeout,
                             &mut current_db,
                             &conn_params,
@@ -486,6 +527,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             &mut in_subscription,
                             &mut in_monitor,
                             &mut aliases,
+                            &mut aliases_modified,
                             &mut timeout,
                             &mut current_db,
                             &conn_params,
@@ -543,6 +585,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 break;
             }
         }
+    }
+
+    // Save aliases if modified
+    if aliases_modified {
+        save_aliases(&aliases);
     }
 
     // Save history

@@ -88,6 +88,7 @@ pub fn process_command(
     in_subscription: &mut bool,
     in_monitor: &mut bool,
     aliases: &mut std::collections::HashMap<String, String>,
+    aliases_modified: &mut bool,
     timeout: &mut Option<u64>,
     current_db: &mut i64,
     conn_params: &ConnParams,
@@ -96,6 +97,40 @@ pub fn process_command(
     if parts[0].eq_ignore_ascii_case("clear") {
         // Clear the terminal screen
         print!("\x1b[2J\x1b[1;1H");
+        return;
+    }
+
+    // Check if it's a HELP command
+    if parts[0].eq_ignore_ascii_case("help") {
+        println!("{}", "resp-cli client commands:".green().bold());
+        println!("  {} - Clear the terminal screen", "CLEAR".cyan());
+        println!("  {} - Start a transaction", "MULTI".cyan());
+        println!("  {} - Execute transaction", "EXEC".cyan());
+        println!("  {} - Discard transaction/pipeline", "DISCARD".cyan());
+        println!("  {} - Start pipeline mode", "PIPELINE".cyan());
+        println!("  {} - Enter monitor mode", "MONITOR".cyan());
+        println!("  {} - Subscribe to channels", "SUBSCRIBE".cyan());
+        println!("  {} - Select database (0-15)", "SELECT <db>".cyan());
+        println!(
+            "  {} - Set/show command timeout",
+            "TIMEOUT [ms|CLEAR]".cyan()
+        );
+        println!("  {} - Execute commands from file", "SOURCE <file>".cyan());
+        println!(
+            "  {} - Manage command aliases",
+            "ALIAS [name cmd|CLEAR|EXPORT|IMPORT]".cyan()
+        );
+        println!("  {} - Show this help message", "HELP".cyan());
+        println!("  {} - Exit the client", "EXIT / QUIT".cyan());
+        println!();
+        println!(
+            "{}",
+            "Use Tab for command and subcommand completion.".dimmed()
+        );
+        println!(
+            "{}",
+            "Use backslash (\\) at end of line for multi-line input.".dimmed()
+        );
         return;
     }
 
@@ -115,6 +150,7 @@ pub fn process_command(
         } else if parts.len() == 2 && parts[1] == "CLEAR" {
             // Clear all aliases
             aliases.clear();
+            *aliases_modified = true;
             println!("{}", "All aliases cleared".green().bold());
         } else if parts.len() == 3 && parts[1] == "EXPORT" {
             // Export aliases to file
@@ -138,6 +174,7 @@ pub fn process_command(
                     ) {
                         Ok(imported_aliases) => {
                             aliases.extend(imported_aliases);
+                            *aliases_modified = true;
                             println!(
                                 "{}",
                                 format!("Aliases imported from '{}'", file_path)
@@ -155,6 +192,7 @@ pub fn process_command(
             let alias = parts[1].to_lowercase();
             let cmd = parts[2];
             aliases.insert(alias.clone(), cmd.to_string());
+            *aliases_modified = true;
             println!(
                 "{}",
                 format!("Alias '{}' set to '{}'", alias, cmd).green().bold()
@@ -164,6 +202,7 @@ pub fn process_command(
             let alias = parts[1].to_lowercase();
             let cmd = parts[2..].join(" ");
             aliases.insert(alias.clone(), cmd.clone());
+            *aliases_modified = true;
             println!(
                 "{}",
                 format!("Alias '{}' set to '{}'", alias, cmd).green().bold()
@@ -351,8 +390,8 @@ pub fn process_command(
                 }
             };
 
-            // Send MONITOR command
-            let result = redis::cmd("MONITOR").query::<()>(&mut monitor_conn);
+            // Send MONITOR command using send_packed_command (does not read response)
+            let result = monitor_conn.send_packed_command(&redis::cmd("MONITOR").get_packed_command());
 
             match result {
                 Ok(_) => {
@@ -369,19 +408,9 @@ pub fn process_command(
                 }
             }
 
-            // Start receiving monitor messages
-            loop {
-                // Try to get the next message from the connection
-                let result: redis::RedisResult<Value> = redis::cmd("").query(&mut monitor_conn);
-                match result {
-                    Ok(value) => {
-                        println!("{}", format_value(&value));
-                    }
-                    Err(_) => {
-                        // Connection closed or error, exit monitor mode
-                        break;
-                    }
-                }
+            // Start receiving monitor messages using recv_response
+            while let Ok(value) = monitor_conn.recv_response() {
+                println!("{}", format_value(&value));
             }
 
             *in_monitor = false;
@@ -556,10 +585,7 @@ pub fn process_command(
                 return;
             }
 
-            // Start subscription
-            *in_subscription = true;
-
-            // Create a new connection for subscription (to avoid blocking the main connection)
+            // Create a new regular connection for subscription (PubSub is not supported in cluster mode)
             let mut sub_conn = match crate::connect(
                 &conn_params.host,
                 &conn_params.port,
@@ -576,49 +602,60 @@ pub fn process_command(
                         "{}",
                         format!("Error connecting for subscription: {}", e).red()
                     );
-                    *in_subscription = false;
                     return;
                 }
             };
 
-            // Send subscribe command
-            let result = redis::cmd(command_parts[0])
-                .arg(&command_parts[1..])
-                .query(&mut sub_conn);
+            // Use PubSub API for proper subscription handling
+            let mut pubsub = sub_conn.as_pubsub();
+            let is_pattern = command_parts[0].eq_ignore_ascii_case("PSUBSCRIBE");
 
-            match result {
-                Ok(value) => {
-                    println!("{}", format_value(&value));
-                }
-                Err(e) => {
-                    handle_error(&e, command_parts[0]);
-                    *in_subscription = false;
-                    return;
+            for channel in &command_parts[1..] {
+                let result = if is_pattern {
+                    pubsub.psubscribe(*channel)
+                } else {
+                    pubsub.subscribe(*channel)
+                };
+                match result {
+                    Ok(_) => {
+                        println!(
+                            "{}",
+                            format!("Subscribed to '{}'", channel).green().bold()
+                        );
+                    }
+                    Err(e) => {
+                        handle_error(&e, command_parts[0]);
+                        return;
+                    }
                 }
             }
+
+            *in_subscription = true;
             println!(
                 "{}",
-                "Entering subscription mode. Press Ctrl+C to exit.".yellow()
+                "Listening for messages. Press Ctrl+C to exit.".yellow()
             );
 
-            // Start receiving messages
+            // Receive messages in a loop
             loop {
-                match redis::cmd("PING").query::<()>(&mut sub_conn) {
-                    Ok(_) => {
-                        // This should not happen in subscription mode
-                        break;
-                    }
-                    Err(_) => {
-                        // In subscription mode, we should receive messages instead of PING responses
-                        match redis::cmd("").query(&mut sub_conn) {
-                            Ok(value) => {
-                                println!("{}", format_value(&value));
-                            }
-                            Err(e) => {
-                                println!("{}", format!("Error receiving message: {}", e).red());
-                                break;
-                            }
+                match pubsub.get_message() {
+                    Ok(msg) => {
+                        let channel = msg.get_channel_name();
+                        let payload: String = msg.get_payload().unwrap_or_default();
+                        if is_pattern {
+                            let pattern: String = msg.get_pattern().unwrap_or_default();
+                            println!("{} [{}] {}", format!("[{}]", pattern).dimmed(), channel.cyan(), payload);
+                        } else {
+                            println!("{} {}", format!("[{}]", channel).cyan(), payload);
                         }
+                    }
+                    Err(e) => {
+                        // Connection closed or error
+                        let err_str = e.to_string();
+                        if !err_str.contains("broken pipe") && !err_str.contains("connection closed") {
+                            println!("{}", format!("Error: {}", e).red());
+                        }
+                        break;
                     }
                 }
             }
@@ -671,42 +708,7 @@ pub fn process_command(
                         println!("{}", format_value(&value));
                     }
                     Err(e) => {
-                        let error_msg = e.to_string();
-                        if error_msg.contains("NOAUTH") {
-                            println!("{}", "Error: Authentication required".red());
-                            println!(
-                                "{}",
-                                "Please connect with the correct password using -a option".yellow()
-                            );
-                        } else if error_msg.contains("ERR wrong number of arguments") {
-                            println!(
-                                "{}",
-                                format!(
-                                    "Error: Wrong number of arguments for command '{}'",
-                                    command_parts[0]
-                                )
-                                .red()
-                            );
-                            println!(
-                                "{}",
-                                "Please check the command syntax and try again".yellow()
-                            );
-                        } else if error_msg.contains("ERR unknown command") {
-                            println!(
-                                "{}",
-                                format!("Error: Unknown command '{}'", command_parts[0]).red()
-                            );
-                            println!("{}", "Please check the command name and try again".yellow());
-                        } else if error_msg.contains("CONNECTION REFUSED") {
-                            println!("{}", "Error: Connection refused".red());
-                            println!(
-                                "{}",
-                                "Please check if the Redis server is running and accessible"
-                                    .yellow()
-                            );
-                        } else {
-                            println!("{}", format!("Error: {}", e).red());
-                        }
+                        handle_error(&e, command_parts[0]);
                     }
                 }
             }
@@ -749,42 +751,7 @@ pub fn process_command(
                         println!("{}", format_value(&value));
                     }
                     Err(e) => {
-                        let error_msg = e.to_string();
-                        if error_msg.contains("NOAUTH") {
-                            println!("{}", "Error: Authentication required".red());
-                            println!(
-                                "{}",
-                                "Please connect with the correct password using -a option".yellow()
-                            );
-                        } else if error_msg.contains("ERR wrong number of arguments") {
-                            println!(
-                                "{}",
-                                format!(
-                                    "Error: Wrong number of arguments for command '{}'",
-                                    command_parts[0]
-                                )
-                                .red()
-                            );
-                            println!(
-                                "{}",
-                                "Please check the command syntax and try again".yellow()
-                            );
-                        } else if error_msg.contains("ERR unknown command") {
-                            println!(
-                                "{}",
-                                format!("Error: Unknown command '{}'", command_parts[0]).red()
-                            );
-                            println!("{}", "Please check the command name and try again".yellow());
-                        } else if error_msg.contains("CONNECTION REFUSED") {
-                            println!("{}", "Error: Connection refused".red());
-                            println!(
-                                "{}",
-                                "Please check if the Redis server is running and accessible"
-                                    .yellow()
-                            );
-                        } else {
-                            println!("{}", format!("Error: {}", e).red());
-                        }
+                        handle_error(&e, command_parts[0]);
                     }
                 }
             }

@@ -97,66 +97,67 @@ pub struct Config {
 
 /// Read .respclirc file from home directory
 pub fn read_respclirc() -> Config {
-    let mut config = Config::default();
-
-    // Set default values
-    config.host = "localhost".to_string();
-    config.port = "6379".to_string();
-    config.db = 0;
-    config.interval = 0.0;
-    config.syntax_highlighting = true;
-    config.color_theme = "default".to_string();
-    config.history_size = 1000;
-    config.completion_enabled = true;
-    config.key_completion_enabled = true;
-    config.cluster = false;
-    config.cluster_nodes = Vec::new();
+    let mut config = Config {
+        host: "localhost".to_string(),
+        port: "6379".to_string(),
+        db: 0,
+        interval: 0.0,
+        syntax_highlighting: true,
+        color_theme: "default".to_string(),
+        history_size: 1000,
+        completion_enabled: true,
+        key_completion_enabled: true,
+        cluster: false,
+        cluster_nodes: Vec::new(),
+        ..Default::default()
+    };
 
     // Get home directory
-    if let Some(home) = std::env::var_os("HOME") {
-        let config_path = std::path::Path::new(&home).join(".respclirc");
-        if config_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(config_path) {
-                for line in content.lines() {
-                    let line = line.trim();
-                    if !line.is_empty() && !line.starts_with('#') {
-                        if let Some((key, value)) = line.split_once(' ') {
-                            match key {
-                                "host" => config.host = value.to_string(),
-                                "port" => config.port = value.to_string(),
-                                "password" => config.password = Some(value.to_string()),
-                                "unix" => config.unix = Some(value.to_string()),
-                                "tls" => config.tls = value.parse().unwrap_or(false),
-                                "tls-ca-cert" => config.tls_ca_cert = Some(value.to_string()),
-                                "tls-client-cert" => {
-                                    config.tls_client_cert = Some(value.to_string())
-                                }
-                                "tls-client-key" => config.tls_client_key = Some(value.to_string()),
-                                "db" => config.db = value.parse().unwrap_or(0),
-                                "repeat" => config.repeat = value.parse().ok(),
-                                "interval" => config.interval = value.parse().unwrap_or(0.0),
-                                "raw" => config.raw = value.parse().unwrap_or(false),
-                                "from-stdin" => config.from_stdin = value.parse().unwrap_or(false),
-                                "scan" => config.scan = value.parse().unwrap_or(false),
-                                "client-name" => config.client_name = Some(value.to_string()),
-                                "syntax-highlighting" => {
-                                    config.syntax_highlighting = value.parse().unwrap_or(true)
-                                }
-                                "color-theme" => config.color_theme = value.to_string(),
-                                "history-size" => {
-                                    config.history_size = value.parse().unwrap_or(1000)
-                                }
-                                "completion-enabled" => {
-                                    config.completion_enabled = value.parse().unwrap_or(true)
-                                }
-                                "key-completion-enabled" => {
-                                    config.key_completion_enabled = value.parse().unwrap_or(true)
-                                }
-                                "cluster" => config.cluster = value.parse().unwrap_or(false),
-                                "cluster-nodes" => config.cluster_nodes.push(value.to_string()),
-                                _ => {} // Ignore unknown keys
-                            }
+    if let Some(home) = dirs::home_dir() {
+        let config_path = home.join(".respclirc");
+        if config_path.exists()
+            && let Ok(content) = std::fs::read_to_string(config_path)
+        {
+            for line in content.lines() {
+                let line = line.trim();
+                if !line.is_empty()
+                    && !line.starts_with('#')
+                    && let Some((key, value)) = line.split_once(' ')
+                {
+                    match key {
+                        "host" => config.host = value.to_string(),
+                        "port" => config.port = value.to_string(),
+                        "password" => config.password = Some(value.to_string()),
+                        "unix" => config.unix = Some(value.to_string()),
+                        "tls" => config.tls = value.parse().unwrap_or(false),
+                        "tls-ca-cert" => config.tls_ca_cert = Some(value.to_string()),
+                        "tls-client-cert" => {
+                            config.tls_client_cert = Some(value.to_string())
                         }
+                        "tls-client-key" => config.tls_client_key = Some(value.to_string()),
+                        "db" => config.db = value.parse().unwrap_or(0),
+                        "repeat" => config.repeat = value.parse().ok(),
+                        "interval" => config.interval = value.parse().unwrap_or(0.0),
+                        "raw" => config.raw = value.parse().unwrap_or(false),
+                        "from-stdin" => config.from_stdin = value.parse().unwrap_or(false),
+                        "scan" => config.scan = value.parse().unwrap_or(false),
+                        "client-name" => config.client_name = Some(value.to_string()),
+                        "syntax-highlighting" => {
+                            config.syntax_highlighting = value.parse().unwrap_or(true)
+                        }
+                        "color-theme" => config.color_theme = value.to_string(),
+                        "history-size" => {
+                            config.history_size = value.parse().unwrap_or(1000)
+                        }
+                        "completion-enabled" => {
+                            config.completion_enabled = value.parse().unwrap_or(true)
+                        }
+                        "key-completion-enabled" => {
+                            config.key_completion_enabled = value.parse().unwrap_or(true)
+                        }
+                        "cluster" => config.cluster = value.parse().unwrap_or(false),
+                        "cluster-nodes" => config.cluster_nodes.push(value.to_string()),
+                        _ => {} // Ignore unknown keys
                     }
                 }
             }

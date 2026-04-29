@@ -16,6 +16,8 @@ use crate::completion::RedisConnection;
 
 pub struct MyHelper {
     pub completer: CommandCompleter,
+    pub syntax_highlighting: bool,
+    pub completion_enabled: bool,
 }
 
 impl Completer for MyHelper {
@@ -27,6 +29,9 @@ impl Completer for MyHelper {
         pos: usize,
         _ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        if !self.completion_enabled {
+            return Ok((pos, Vec::new()));
+        }
         self.completer.complete(line, pos)
     }
 }
@@ -34,6 +39,9 @@ impl Completer for MyHelper {
 impl Helper for MyHelper {}
 impl Highlighter for MyHelper {
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> std::borrow::Cow<'l, str> {
+        if !self.syntax_highlighting {
+            return std::borrow::Cow::Borrowed(line);
+        }
         // Basic syntax highlighting
         let mut result = String::new();
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -69,12 +77,18 @@ impl Highlighter for MyHelper {
     fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
         &'s self,
         prompt: &'p str,
-        default: bool,
+        _default: bool,
     ) -> std::borrow::Cow<'b, str> {
-        if default {
+        if prompt.contains("(multi)") {
+            prompt.purple().to_string().into()
+        } else if prompt.contains("(pipeline)") {
+            prompt.blue().to_string().into()
+        } else if prompt.contains("(sub)") {
             prompt.green().to_string().into()
+        } else if prompt.contains("(monitor)") {
+            prompt.yellow().to_string().into()
         } else {
-            prompt.to_string().into()
+            prompt.green().to_string().into()
         }
     }
 }
@@ -101,7 +115,7 @@ Welcome to resp-cli!"
     println!("{}", "Use Tab for command completion.".cyan());
 }
 
-/// Get prompt based on connection info and state
+/// Get prompt based on connection info and state (plain text, no ANSI codes)
 pub fn get_prompt(
     connection_info: &str,
     db_info: &str,
@@ -112,23 +126,13 @@ pub fn get_prompt(
 ) -> String {
     if in_transaction {
         format!("resp(multi)[{}{}]> ", connection_info, db_info)
-            .purple()
-            .to_string()
     } else if in_pipeline {
         format!("resp(pipeline)[{}{}]> ", connection_info, db_info)
-            .blue()
-            .to_string()
     } else if in_subscription {
         format!("resp(sub)[{}{}]> ", connection_info, db_info)
-            .green()
-            .to_string()
     } else if in_monitor {
         format!("resp(monitor)[{}{}]> ", connection_info, db_info)
-            .yellow()
-            .to_string()
     } else {
         format!("resp[{}{}]> ", connection_info, db_info)
-            .green()
-            .to_string()
     }
 }

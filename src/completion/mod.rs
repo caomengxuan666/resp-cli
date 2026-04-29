@@ -60,6 +60,7 @@ impl redis::ConnectionLike for RedisConnection {
 pub struct CommandCompleter {
     command_docs: CommandDocs,
     conn: Option<Rc<RefCell<RedisConnection>>>,
+    key_completion_enabled: bool,
 }
 
 impl CommandCompleter {
@@ -67,11 +68,16 @@ impl CommandCompleter {
         Self {
             command_docs,
             conn: None,
+            key_completion_enabled: true,
         }
     }
 
     pub fn set_connection(&mut self, conn: Rc<RefCell<RedisConnection>>) {
         self.conn = Some(conn);
+    }
+
+    pub fn set_key_completion_enabled(&mut self, enabled: bool) {
+        self.key_completion_enabled = enabled;
     }
 
     pub fn complete(&self, line: &str, pos: usize) -> Result<(usize, Vec<Pair>), ReadlineError> {
@@ -195,7 +201,7 @@ impl CommandCompleter {
         }
 
         // Add key name completions for commands that operate on keys
-        if self.is_key_operation(command) {
+        if self.key_completion_enabled && self.is_key_operation(command) {
             let key_completions = self.complete_key_names(prefix);
             completions.extend(key_completions);
         }
@@ -252,12 +258,48 @@ impl CommandCompleter {
     }
 
     fn is_key_operation(&self, command: &str) -> bool {
-        // Check if the command operates on keys
-        let key_commands = vec![
-            "GET", "SET", "DEL", "EXISTS", "INCR", "DECR", "EXPIRE", "TTL", "LPUSH", "RPUSH",
-            "LPOP", "RPOP", "HGET", "HSET", "HDEL", "HMGET", "HMSET",
+        let cmd = command.to_uppercase();
+        let key_commands = [
+            // String
+            "GET", "SET", "APPEND", "DECR", "DECRBY", "GETDEL", "GETEX", "GETRANGE", "GETSET",
+            "INCR", "INCRBY", "INCRBYFLOAT", "MGET", "MSET", "MSETNX", "PSETEX", "SETNX",
+            "SETEX", "SETRANGE", "STRLEN", "SUBSTR",
+            // Key generic
+            "DEL", "UNLINK", "DUMP", "EXISTS", "EXPIRE", "EXPIREAT", "PEXPIRE", "PEXPIREAT",
+            "KEYS", "MOVE", "OBJECT", "PERSIST", "PEXPIRE", "PTTL", "RANDOMKEY", "RENAME",
+            "RENAMENX", "RESTORE", "SORT", "TOUCH", "TTL", "TYPE", "WAIT", "SCAN",
+            // List
+            "LINDEX", "LINSERT", "LLEN", "LMOVE", "LMPOP", "LPOS", "LPUSH", "LPUSHX",
+            "LRANGE", "LREM", "LSET", "LTRIM", "RPOP", "RPOPLPUSH", "RPUSH", "RPUSHX",
+            "BLMOVE", "BLMPOP", "BLPOP", "BRPOP", "BRPOPLPUSH", "LPOP", "LMPOP",
+            // Hash
+            "HDEL", "HEXISTS", "HGET", "HGETALL", "HINCRBY", "HINCRBYFLOAT", "HKEYS",
+            "HLEN", "HMGET", "HMSET", "HRANDFIELD", "HSCAN", "HSET", "HSETNX", "HSTRLEN",
+            "HVALS",
+            // Set
+            "SADD", "SCARD", "SDIFF", "SDIFFSTORE", "SINTER", "SINTERCARD", "SINTERSTORE",
+            "SISMEMBER", "SMEMBERS", "SMISMEMBER", "SMOVE", "SPOP", "SRANDMEMBER", "SREM",
+            "SUNION", "SUNIONSTORE", "SSCAN",
+            // Sorted Set
+            "ZADD", "ZCARD", "ZCOUNT", "ZDIFF", "ZDIFFSTORE", "ZINCRBY", "ZINTER",
+            "ZINTERCARD", "ZINTERSTORE", "ZLEXCOUNT", "ZMPOP", "ZMSCORE", "ZPOPMAX",
+            "ZPOPMIN", "ZRANDMEMBER", "ZRANGE", "ZRANGEBYLEX", "ZRANGEBYSCORE", "ZRANK",
+            "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYRANK", "ZREMRANGEBYSCORE", "ZREVRANGE",
+            "ZREVRANGEBYLEX", "ZREVRANGEBYSCORE", "ZREVRANK", "ZSCAN", "ZSCORE",
+            "ZUNION", "ZUNIONSTORE", "BZMPOP", "BZPOPMAX", "BZPOPMIN",
+            // HyperLogLog
+            "PFADD", "PFCOUNT", "PFMERGE",
+            // Stream
+            "XACK", "XADD", "XAUTOCLAIM", "XCLAIM", "XDEL", "XGROUP", "XINFO", "XLEN",
+            "XPENDING", "XRANGE", "XREAD", "XREADGROUP", "XREVRANGE", "XSETID", "XTRIM",
+            // Geo
+            "GEOADD", "GEODIST", "GEOHASH", "GEOPOS", "GEORADIUS", "GEORADIUSBYMEMBER",
+            "GEOSEARCH", "GEOSEARCHSTORE",
+            // Bitmap
+            "BITCOUNT", "BITFIELD", "BITFIELD_RO", "BITOP", "BITPOS", "GETBIT", "SETBIT",
+            // Pub/Sub (channel names)
+            "PUBLISH", "SUBSCRIBE", "PSUBSCRIBE", "UNSUBSCRIBE", "PUNSUBSCRIBE",
         ];
-
-        key_commands.contains(&command.to_uppercase().as_str())
+        key_commands.contains(&cmd.as_str())
     }
 }

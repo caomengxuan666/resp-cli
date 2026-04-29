@@ -32,6 +32,34 @@ pub struct CommandDocs {
 }
 
 impl CommandDocs {
+    /// Parse COMMAND response into command entries
+    fn parse_command_response(cmd_list: redis::Value) -> HashMap<String, CommandInfo> {
+        let mut commands = HashMap::new();
+        if let redis::Value::Array(values) = &cmd_list {
+            for value in values {
+                if let redis::Value::Array(cmd_parts) = value
+                    && let Some(redis::Value::BulkString(cmd_name)) = cmd_parts.first()
+                    && let Ok(cmd_name_str) = String::from_utf8(cmd_name.to_vec())
+                {
+                    commands.insert(
+                        cmd_name_str.to_uppercase(),
+                        CommandInfo {
+                            name: cmd_name_str,
+                            arity: 0,
+                            flags: vec![],
+                            first_key: 0,
+                            last_key: 0,
+                            key_step: 0,
+                            subcommands: None,
+                            arguments: None,
+                        },
+                    );
+                }
+            }
+        }
+        commands
+    }
+
     pub fn fetch<C: redis::ConnectionLike>(conn: &mut C) -> RedisResult<Self> {
         let mut commands = HashMap::new();
 
@@ -40,11 +68,10 @@ impl CommandDocs {
             Ok(cmd_docs) => {
                 if let redis::Value::Array(values) = &cmd_docs {
                     for value in values {
-                        if let redis::Value::BulkString(data) = value {
-                            if let Ok(cmd_info) = serde_json::from_slice(data) {
-                                let cmd_info: CommandInfo = cmd_info;
-                                commands.insert(cmd_info.name.to_uppercase(), cmd_info);
-                            }
+                        if let redis::Value::BulkString(data) = value
+                            && let Ok(cmd_info) = serde_json::from_slice::<CommandInfo>(data)
+                        {
+                            commands.insert(cmd_info.name.to_uppercase(), cmd_info);
                         }
                     }
                 }
@@ -52,60 +79,14 @@ impl CommandDocs {
             Err(_) => {
                 // COMMAND DOCS failed, fall back to COMMAND
                 let cmd_list: redis::Value = redis::cmd("COMMAND").query(conn)?;
-
-                if let redis::Value::Array(values) = &cmd_list {
-                    for value in values {
-                        if let redis::Value::Array(cmd_parts) = value {
-                            if let Some(redis::Value::BulkString(cmd_name)) = cmd_parts.get(0) {
-                                if let Ok(cmd_name_str) = String::from_utf8(cmd_name.to_vec()) {
-                                    commands.insert(
-                                        cmd_name_str.to_uppercase(),
-                                        CommandInfo {
-                                            name: cmd_name_str,
-                                            arity: 0,
-                                            flags: vec![],
-                                            first_key: 0,
-                                            last_key: 0,
-                                            key_step: 0,
-                                            subcommands: None,
-                                            arguments: None,
-                                        },
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
+                commands = Self::parse_command_response(cmd_list);
             }
         }
 
-        // If both commands failed or returned no data, try COMMAND as a last resort
+        // If COMMAND DOCS returned no data, try COMMAND as a last resort
         if commands.is_empty() {
             let cmd_list: redis::Value = redis::cmd("COMMAND").query(conn)?;
-
-            if let redis::Value::Array(values) = &cmd_list {
-                for value in values {
-                    if let redis::Value::Array(cmd_parts) = value {
-                        if let Some(redis::Value::BulkString(cmd_name)) = cmd_parts.get(0) {
-                            if let Ok(cmd_name_str) = String::from_utf8(cmd_name.to_vec()) {
-                                commands.insert(
-                                    cmd_name_str.to_uppercase(),
-                                    CommandInfo {
-                                        name: cmd_name_str,
-                                        arity: 0,
-                                        flags: vec![],
-                                        first_key: 0,
-                                        last_key: 0,
-                                        key_step: 0,
-                                        subcommands: None,
-                                        arguments: None,
-                                    },
-                                );
-                            }
-                        }
-                    }
-                }
-            }
+            commands = Self::parse_command_response(cmd_list);
         }
 
         Ok(Self { commands })
@@ -113,6 +94,10 @@ impl CommandDocs {
 
     pub fn len(&self) -> usize {
         self.commands.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.commands.is_empty()
     }
 
     pub fn get_command(&self, name: &str) -> Option<&CommandInfo> {
