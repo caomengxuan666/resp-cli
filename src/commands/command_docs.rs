@@ -31,6 +31,29 @@ pub struct CommandDocs {
     commands: HashMap<String, CommandInfo>,
 }
 
+#[cfg(test)]
+impl CommandInfo {
+    pub(crate) fn test(name: &str, subcommands: Option<HashMap<String, CommandInfo>>) -> Self {
+        Self {
+            name: name.to_string(),
+            arity: 0,
+            flags: vec![],
+            first_key: 0,
+            last_key: 0,
+            key_step: 0,
+            subcommands,
+            arguments: None,
+        }
+    }
+}
+
+#[cfg(test)]
+impl CommandDocs {
+    pub(crate) fn test(commands: HashMap<String, CommandInfo>) -> Self {
+        Self { commands }
+    }
+}
+
 impl CommandDocs {
     /// Parse COMMAND response into command entries
     fn parse_command_response(cmd_list: redis::Value) -> HashMap<String, CommandInfo> {

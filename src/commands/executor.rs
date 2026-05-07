@@ -391,7 +391,8 @@ pub fn process_command(
             };
 
             // Send MONITOR command using send_packed_command (does not read response)
-            let result = monitor_conn.send_packed_command(&redis::cmd("MONITOR").get_packed_command());
+            let result =
+                monitor_conn.send_packed_command(&redis::cmd("MONITOR").get_packed_command());
 
             match result {
                 Ok(_) => {
@@ -618,10 +619,7 @@ pub fn process_command(
                 };
                 match result {
                     Ok(_) => {
-                        println!(
-                            "{}",
-                            format!("Subscribed to '{}'", channel).green().bold()
-                        );
+                        println!("{}", format!("Subscribed to '{}'", channel).green().bold());
                     }
                     Err(e) => {
                         handle_error(&e, command_parts[0]);
@@ -644,7 +642,12 @@ pub fn process_command(
                         let payload: String = msg.get_payload().unwrap_or_default();
                         if is_pattern {
                             let pattern: String = msg.get_pattern().unwrap_or_default();
-                            println!("{} [{}] {}", format!("[{}]", pattern).dimmed(), channel.cyan(), payload);
+                            println!(
+                                "{} [{}] {}",
+                                format!("[{}]", pattern).dimmed(),
+                                channel.cyan(),
+                                payload
+                            );
                         } else {
                             println!("{} {}", format!("[{}]", channel).cyan(), payload);
                         }
@@ -652,7 +655,9 @@ pub fn process_command(
                     Err(e) => {
                         // Connection closed or error
                         let err_str = e.to_string();
-                        if !err_str.contains("broken pipe") && !err_str.contains("connection closed") {
+                        if !err_str.contains("broken pipe")
+                            && !err_str.contains("connection closed")
+                        {
                             println!("{}", format!("Error: {}", e).red());
                         }
                         break;

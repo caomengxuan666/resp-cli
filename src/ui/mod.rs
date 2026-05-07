@@ -8,6 +8,7 @@ use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
 use rustyline::{Context, Helper};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -74,6 +75,13 @@ impl Highlighter for MyHelper {
         result.into()
     }
 
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        if !self.syntax_highlighting {
+            return Cow::Borrowed(hint);
+        }
+        Cow::Owned(hint.dimmed().to_string())
+    }
+
     fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
         &'s self,
         prompt: &'p str,
@@ -94,6 +102,13 @@ impl Highlighter for MyHelper {
 }
 impl Hinter for MyHelper {
     type Hint = String;
+
+    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<Self::Hint> {
+        if !self.completion_enabled {
+            return None;
+        }
+        self.completer.hint(line, pos)
+    }
 }
 impl Validator for MyHelper {}
 

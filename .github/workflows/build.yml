@@ -29,6 +29,17 @@ jobs:
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Verify tag matches crate version
+      if: startsWith(github.ref, 'refs/tags/v')
+      shell: bash
+      run: |
+        crate_version=$(awk -F'"' '/^version = / {print $2; exit}' Cargo.toml)
+        tag_version="${GITHUB_REF_NAME#v}"
+        if [ "$crate_version" != "$tag_version" ]; then
+          echo "Tag version v${tag_version} does not match Cargo.toml version ${crate_version}"
+          exit 1
+        fi
+
     - name: Run tests
       run: cargo test
 
@@ -92,6 +103,7 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
     
     steps:
     - uses: actions/checkout@v4
@@ -120,6 +132,9 @@ jobs:
     - name: Create release
       uses: softprops/action-gh-release@v1
       with:
+        tag_name: ${{ github.ref_name }}
+        name: resp-cli ${{ github.ref_name }}
+        generate_release_notes: true
         files: |
           ./artifacts/resp-cli-linux
           ./artifacts/resp-cli-macos

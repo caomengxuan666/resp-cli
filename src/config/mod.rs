@@ -131,9 +131,7 @@ pub fn read_respclirc() -> Config {
                         "unix" => config.unix = Some(value.to_string()),
                         "tls" => config.tls = value.parse().unwrap_or(false),
                         "tls-ca-cert" => config.tls_ca_cert = Some(value.to_string()),
-                        "tls-client-cert" => {
-                            config.tls_client_cert = Some(value.to_string())
-                        }
+                        "tls-client-cert" => config.tls_client_cert = Some(value.to_string()),
                         "tls-client-key" => config.tls_client_key = Some(value.to_string()),
                         "db" => config.db = value.parse().unwrap_or(0),
                         "repeat" => config.repeat = value.parse().ok(),
@@ -146,9 +144,7 @@ pub fn read_respclirc() -> Config {
                             config.syntax_highlighting = value.parse().unwrap_or(true)
                         }
                         "color-theme" => config.color_theme = value.to_string(),
-                        "history-size" => {
-                            config.history_size = value.parse().unwrap_or(1000)
-                        }
+                        "history-size" => config.history_size = value.parse().unwrap_or(1000),
                         "completion-enabled" => {
                             config.completion_enabled = value.parse().unwrap_or(true)
                         }

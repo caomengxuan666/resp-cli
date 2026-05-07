@@ -49,9 +49,7 @@ fn get_aliases_path() -> PathBuf {
 fn load_aliases() -> std::collections::HashMap<String, String> {
     let path = get_aliases_path();
     match std::fs::read_to_string(&path) {
-        Ok(content) => {
-            serde_json::from_str(&content).unwrap_or_default()
-        }
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
         Err(_) => std::collections::HashMap::new(),
     }
 }
@@ -404,7 +402,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("flushall", "FLUSHALL"),
     ];
     for (alias, cmd) in default_aliases {
-        aliases.entry(alias.to_string()).or_insert_with(|| cmd.to_string());
+        aliases
+            .entry(alias.to_string())
+            .or_insert_with(|| cmd.to_string());
     }
     let mut aliases_modified = false;
 

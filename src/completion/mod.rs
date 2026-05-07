@@ -81,8 +81,33 @@ impl CommandCompleter {
     }
 
     pub fn complete(&self, line: &str, pos: usize) -> Result<(usize, Vec<Pair>), ReadlineError> {
+        self.complete_internal(line, pos, true)
+    }
+
+    pub fn hint(&self, line: &str, pos: usize) -> Option<String> {
+        if line.is_empty() || pos < line.len() {
+            return None;
+        }
+
+        let (start, completions) = self.complete_internal(line, pos, false).ok()?;
+        let prefix = &line[start..pos];
+        let candidate = completions.first()?;
+        let suffix = candidate.replacement.strip_prefix(prefix)?;
+        if suffix.is_empty() {
+            None
+        } else {
+            Some(suffix.to_string())
+        }
+    }
+
+    fn complete_internal(
+        &self,
+        line: &str,
+        pos: usize,
+        include_key_names: bool,
+    ) -> Result<(usize, Vec<Pair>), ReadlineError> {
         let line = &line[..pos];
-        let parts: Vec<&str> = line.split_whitespace().collect();
+        let parts = Self::split_for_completion(line);
 
         let (start, completions) = if parts.is_empty() {
             (0, self.complete_commands(""))
@@ -103,7 +128,7 @@ impl CommandCompleter {
                 } else {
                     (
                         start,
-                        self.complete_args(command, parts.len() - 1, last_part),
+                        self.complete_args(command, parts.len() - 1, last_part, include_key_names),
                     )
                 }
             } else {
@@ -119,26 +144,45 @@ impl CommandCompleter {
                                 &format!("{} {}", command, potential_subcmd),
                                 parts.len() - 2,
                                 last_part,
+                                include_key_names,
                             ),
                         )
                     } else {
                         // No subcommand, complete main command args
                         (
                             start,
-                            self.complete_args(command, parts.len() - 1, last_part),
+                            self.complete_args(
+                                command,
+                                parts.len() - 1,
+                                last_part,
+                                include_key_names,
+                            ),
                         )
                     }
                 } else {
                     // No subcommands, complete main command args
                     (
                         start,
-                        self.complete_args(command, parts.len() - 1, last_part),
+                        self.complete_args(command, parts.len() - 1, last_part, include_key_names),
                     )
                 }
             }
         };
 
         Ok((start, completions))
+    }
+
+    fn split_for_completion(line: &str) -> Vec<&str> {
+        let mut parts: Vec<&str> = line.split_whitespace().collect();
+        if line
+            .chars()
+            .last()
+            .map(|c| c.is_whitespace())
+            .unwrap_or(false)
+        {
+            parts.push("");
+        }
+        parts
     }
 
     fn complete_commands(&self, prefix: &str) -> Vec<Pair> {
@@ -182,7 +226,13 @@ impl CommandCompleter {
             .unwrap_or_default()
     }
 
-    fn complete_args(&self, command: &str, _arg_index: usize, prefix: &str) -> Vec<Pair> {
+    fn complete_args(
+        &self,
+        command: &str,
+        _arg_index: usize,
+        prefix: &str,
+        include_key_names: bool,
+    ) -> Vec<Pair> {
         // This is a placeholder for argument completion
         // In a real implementation, we would parse the command's argument info
         // and provide relevant completions based on the argument type and position
@@ -201,7 +251,7 @@ impl CommandCompleter {
         }
 
         // Add key name completions for commands that operate on keys
-        if self.key_completion_enabled && self.is_key_operation(command) {
+        if include_key_names && self.key_completion_enabled && self.is_key_operation(command) {
             let key_completions = self.complete_key_names(prefix);
             completions.extend(key_completions);
         }
@@ -261,45 +311,237 @@ impl CommandCompleter {
         let cmd = command.to_uppercase();
         let key_commands = [
             // String
-            "GET", "SET", "APPEND", "DECR", "DECRBY", "GETDEL", "GETEX", "GETRANGE", "GETSET",
-            "INCR", "INCRBY", "INCRBYFLOAT", "MGET", "MSET", "MSETNX", "PSETEX", "SETNX",
-            "SETEX", "SETRANGE", "STRLEN", "SUBSTR",
+            "GET",
+            "SET",
+            "APPEND",
+            "DECR",
+            "DECRBY",
+            "GETDEL",
+            "GETEX",
+            "GETRANGE",
+            "GETSET",
+            "INCR",
+            "INCRBY",
+            "INCRBYFLOAT",
+            "MGET",
+            "MSET",
+            "MSETNX",
+            "PSETEX",
+            "SETNX",
+            "SETEX",
+            "SETRANGE",
+            "STRLEN",
+            "SUBSTR",
             // Key generic
-            "DEL", "UNLINK", "DUMP", "EXISTS", "EXPIRE", "EXPIREAT", "PEXPIRE", "PEXPIREAT",
-            "KEYS", "MOVE", "OBJECT", "PERSIST", "PEXPIRE", "PTTL", "RANDOMKEY", "RENAME",
-            "RENAMENX", "RESTORE", "SORT", "TOUCH", "TTL", "TYPE", "WAIT", "SCAN",
+            "DEL",
+            "UNLINK",
+            "DUMP",
+            "EXISTS",
+            "EXPIRE",
+            "EXPIREAT",
+            "PEXPIRE",
+            "PEXPIREAT",
+            "KEYS",
+            "MOVE",
+            "OBJECT",
+            "PERSIST",
+            "PEXPIRE",
+            "PTTL",
+            "RANDOMKEY",
+            "RENAME",
+            "RENAMENX",
+            "RESTORE",
+            "SORT",
+            "TOUCH",
+            "TTL",
+            "TYPE",
+            "WAIT",
+            "SCAN",
             // List
-            "LINDEX", "LINSERT", "LLEN", "LMOVE", "LMPOP", "LPOS", "LPUSH", "LPUSHX",
-            "LRANGE", "LREM", "LSET", "LTRIM", "RPOP", "RPOPLPUSH", "RPUSH", "RPUSHX",
-            "BLMOVE", "BLMPOP", "BLPOP", "BRPOP", "BRPOPLPUSH", "LPOP", "LMPOP",
+            "LINDEX",
+            "LINSERT",
+            "LLEN",
+            "LMOVE",
+            "LMPOP",
+            "LPOS",
+            "LPUSH",
+            "LPUSHX",
+            "LRANGE",
+            "LREM",
+            "LSET",
+            "LTRIM",
+            "RPOP",
+            "RPOPLPUSH",
+            "RPUSH",
+            "RPUSHX",
+            "BLMOVE",
+            "BLMPOP",
+            "BLPOP",
+            "BRPOP",
+            "BRPOPLPUSH",
+            "LPOP",
+            "LMPOP",
             // Hash
-            "HDEL", "HEXISTS", "HGET", "HGETALL", "HINCRBY", "HINCRBYFLOAT", "HKEYS",
-            "HLEN", "HMGET", "HMSET", "HRANDFIELD", "HSCAN", "HSET", "HSETNX", "HSTRLEN",
+            "HDEL",
+            "HEXISTS",
+            "HGET",
+            "HGETALL",
+            "HINCRBY",
+            "HINCRBYFLOAT",
+            "HKEYS",
+            "HLEN",
+            "HMGET",
+            "HMSET",
+            "HRANDFIELD",
+            "HSCAN",
+            "HSET",
+            "HSETNX",
+            "HSTRLEN",
             "HVALS",
             // Set
-            "SADD", "SCARD", "SDIFF", "SDIFFSTORE", "SINTER", "SINTERCARD", "SINTERSTORE",
-            "SISMEMBER", "SMEMBERS", "SMISMEMBER", "SMOVE", "SPOP", "SRANDMEMBER", "SREM",
-            "SUNION", "SUNIONSTORE", "SSCAN",
+            "SADD",
+            "SCARD",
+            "SDIFF",
+            "SDIFFSTORE",
+            "SINTER",
+            "SINTERCARD",
+            "SINTERSTORE",
+            "SISMEMBER",
+            "SMEMBERS",
+            "SMISMEMBER",
+            "SMOVE",
+            "SPOP",
+            "SRANDMEMBER",
+            "SREM",
+            "SUNION",
+            "SUNIONSTORE",
+            "SSCAN",
             // Sorted Set
-            "ZADD", "ZCARD", "ZCOUNT", "ZDIFF", "ZDIFFSTORE", "ZINCRBY", "ZINTER",
-            "ZINTERCARD", "ZINTERSTORE", "ZLEXCOUNT", "ZMPOP", "ZMSCORE", "ZPOPMAX",
-            "ZPOPMIN", "ZRANDMEMBER", "ZRANGE", "ZRANGEBYLEX", "ZRANGEBYSCORE", "ZRANK",
-            "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYRANK", "ZREMRANGEBYSCORE", "ZREVRANGE",
-            "ZREVRANGEBYLEX", "ZREVRANGEBYSCORE", "ZREVRANK", "ZSCAN", "ZSCORE",
-            "ZUNION", "ZUNIONSTORE", "BZMPOP", "BZPOPMAX", "BZPOPMIN",
+            "ZADD",
+            "ZCARD",
+            "ZCOUNT",
+            "ZDIFF",
+            "ZDIFFSTORE",
+            "ZINCRBY",
+            "ZINTER",
+            "ZINTERCARD",
+            "ZINTERSTORE",
+            "ZLEXCOUNT",
+            "ZMPOP",
+            "ZMSCORE",
+            "ZPOPMAX",
+            "ZPOPMIN",
+            "ZRANDMEMBER",
+            "ZRANGE",
+            "ZRANGEBYLEX",
+            "ZRANGEBYSCORE",
+            "ZRANK",
+            "ZREM",
+            "ZREMRANGEBYLEX",
+            "ZREMRANGEBYRANK",
+            "ZREMRANGEBYSCORE",
+            "ZREVRANGE",
+            "ZREVRANGEBYLEX",
+            "ZREVRANGEBYSCORE",
+            "ZREVRANK",
+            "ZSCAN",
+            "ZSCORE",
+            "ZUNION",
+            "ZUNIONSTORE",
+            "BZMPOP",
+            "BZPOPMAX",
+            "BZPOPMIN",
             // HyperLogLog
-            "PFADD", "PFCOUNT", "PFMERGE",
+            "PFADD",
+            "PFCOUNT",
+            "PFMERGE",
             // Stream
-            "XACK", "XADD", "XAUTOCLAIM", "XCLAIM", "XDEL", "XGROUP", "XINFO", "XLEN",
-            "XPENDING", "XRANGE", "XREAD", "XREADGROUP", "XREVRANGE", "XSETID", "XTRIM",
+            "XACK",
+            "XADD",
+            "XAUTOCLAIM",
+            "XCLAIM",
+            "XDEL",
+            "XGROUP",
+            "XINFO",
+            "XLEN",
+            "XPENDING",
+            "XRANGE",
+            "XREAD",
+            "XREADGROUP",
+            "XREVRANGE",
+            "XSETID",
+            "XTRIM",
             // Geo
-            "GEOADD", "GEODIST", "GEOHASH", "GEOPOS", "GEORADIUS", "GEORADIUSBYMEMBER",
-            "GEOSEARCH", "GEOSEARCHSTORE",
+            "GEOADD",
+            "GEODIST",
+            "GEOHASH",
+            "GEOPOS",
+            "GEORADIUS",
+            "GEORADIUSBYMEMBER",
+            "GEOSEARCH",
+            "GEOSEARCHSTORE",
             // Bitmap
-            "BITCOUNT", "BITFIELD", "BITFIELD_RO", "BITOP", "BITPOS", "GETBIT", "SETBIT",
+            "BITCOUNT",
+            "BITFIELD",
+            "BITFIELD_RO",
+            "BITOP",
+            "BITPOS",
+            "GETBIT",
+            "SETBIT",
             // Pub/Sub (channel names)
-            "PUBLISH", "SUBSCRIBE", "PSUBSCRIBE", "UNSUBSCRIBE", "PUNSUBSCRIBE",
+            "PUBLISH",
+            "SUBSCRIBE",
+            "PSUBSCRIBE",
+            "UNSUBSCRIBE",
+            "PUNSUBSCRIBE",
         ];
         key_commands.contains(&cmd.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::command_docs::CommandInfo;
+    use std::collections::HashMap;
+
+    fn build_completer() -> CommandCompleter {
+        let mut subcommands = HashMap::new();
+        subcommands.insert("GET".to_string(), CommandInfo::test("GET", None));
+        subcommands.insert("SET".to_string(), CommandInfo::test("SET", None));
+
+        let mut commands = HashMap::new();
+        commands.insert("GET".to_string(), CommandInfo::test("GET", None));
+        commands.insert("SET".to_string(), CommandInfo::test("SET", None));
+        commands.insert(
+            "CONFIG".to_string(),
+            CommandInfo::test("CONFIG", Some(subcommands)),
+        );
+
+        CommandCompleter::new(crate::commands::command_docs::CommandDocs::test(commands))
+    }
+
+    #[test]
+    fn hint_shows_command_suffix() {
+        let completer = build_completer();
+        assert_eq!(completer.hint("S", 1), Some("ET".to_string()));
+    }
+
+    #[test]
+    fn hint_shows_subcommand_suffix() {
+        let completer = build_completer();
+        assert_eq!(completer.hint("CONFIG G", 8), Some("ET".to_string()));
+    }
+
+    #[test]
+    fn hint_shows_common_arg_suffix() {
+        let completer = build_completer();
+        assert_eq!(completer.hint("SET ", 4), Some("EX".to_string()));
+    }
+
+    #[test]
+    fn hint_is_none_for_exact_command() {
+        let completer = build_completer();
+        assert_eq!(completer.hint("SET", 3), None);
     }
 }
